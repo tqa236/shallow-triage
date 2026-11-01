@@ -1,7 +1,9 @@
 """Command-line entry point.
 
 ``shallow-triage candidates owner/repo`` prints ranked issues as JSON;
-``shallow-triage page owner/repo -o triage.html`` renders them as HTML.
+``shallow-triage page owner/repo -o triage.html`` renders them as HTML;
+``shallow-triage site owner/a owner/b -o site/`` renders an index plus one
+page per repository.
 """
 
 import argparse
@@ -13,10 +15,10 @@ from pathlib import Path
 from shallow_triage import gh
 from shallow_triage.issues import fetch_open_issues, rank, score_issue
 from shallow_triage.page import render_page
+from shallow_triage.site import build_site
 
 
 def _add_common(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("repo", help="owner/name")
     parser.add_argument("-n", "--limit", type=int, default=10)
     parser.add_argument(
         "--include-linked",
@@ -29,13 +31,29 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="shallow-triage")
     sub = parser.add_subparsers(dest="command", required=True)
     cand = sub.add_parser("candidates", help="list the most triageable open issues")
+    cand.add_argument("repo", help="owner/name")
     _add_common(cand)
     page = sub.add_parser("page", help="render the triage page as HTML")
+    page.add_argument("repo", help="owner/name")
     _add_common(page)
     page.add_argument(
         "-o", "--output", type=Path, help="write to this file instead of stdout"
     )
+    site = sub.add_parser("site", help="render an index plus one page per repo")
+    site.add_argument("repos", nargs="+", metavar="repo", help="owner/name")
+    _add_common(site)
+    site.add_argument("-o", "--output", type=Path, required=True, help="directory")
     args = parser.parse_args(argv)
+
+    if args.command == "site":
+        failed = build_site(
+            args.repos,
+            args.output,
+            limit=args.limit,
+            include_linked=args.include_linked,
+            generated_at=datetime.now(UTC),
+        )
+        return 1 if failed else 0
 
     try:
         issues = fetch_open_issues(args.repo)

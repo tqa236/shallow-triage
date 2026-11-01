@@ -1,6 +1,7 @@
 """Render ranked issues as a single self-contained HTML page."""
 
 import re
+from dataclasses import dataclass
 from datetime import datetime
 from html import escape
 
@@ -43,6 +44,14 @@ li {
 .plus { color: var(--plus); }
 .minus { color: var(--minus); }
 .linked { font-size: 0.875rem; margin-top: 8px; }
+.back { display: inline-block; margin-bottom: 16px; font-size: 0.875rem; }
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; background: var(--card); }
+th, td {
+  padding: 8px 12px; border-bottom: 1px solid var(--border); text-align: left;
+}
+th { font-size: 0.8125rem; color: var(--muted); font-weight: 600; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 """
 
 
@@ -78,33 +87,89 @@ def _issue_html(issue: Issue) -> str:
     )
 
 
+def _document(title: str, body: str) -> str:
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{escape(title)}</title>
+<style>{_CSS}</style>
+</head>
+<body>
+<main>
+{body}
+</main>
+</body>
+</html>
+"""
+
+
+def _when(generated_at: datetime) -> str:
+    return generated_at.strftime("%Y-%m-%d %H:%M %Z").strip()
+
+
 def render_page(
     repo: str,
     issues: list[Issue],
     *,
     total_open: int,
     generated_at: datetime,
+    back_href: str | None = None,
 ) -> str:
     """Return a complete HTML document listing ``issues`` in the given order."""
     items = "\n".join(_issue_html(i) for i in issues)
-    when = generated_at.strftime("%Y-%m-%d %H:%M %Z").strip()
+    when = _when(generated_at)
     meta = f"Top {len(issues)} of {total_open} open issues · generated {when}"
-    return f"""<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{escape(repo)} triage</title>
-<style>{_CSS}</style>
-</head>
-<body>
-<main>
-<h1>Triage: <a href="https://github.com/{escape(repo)}">{escape(repo)}</a></h1>
+    back = ""
+    if back_href:
+        back = f'<a class="back" href="{escape(back_href)}">← All repositories</a>\n'
+    repo_link = f'<a href="https://github.com/{escape(repo)}">{escape(repo)}</a>'
+    return _document(
+        f"{repo} triage",
+        f"""{back}<h1>Triage: {repo_link}</h1>
 <p class="meta">{escape(meta)}</p>
 <ol>
 {items}
-</ol>
-</main>
-</body>
-</html>
-"""
+</ol>""",
+    )
+
+
+@dataclass(frozen=True)
+class RepoSummary:
+    """One row of the index page."""
+
+    repo: str
+    href: str
+    total_open: int
+    linked: int
+    shown: int
+    best_score: int | None
+
+
+def render_index(summaries: list[RepoSummary], *, generated_at: datetime) -> str:
+    """Return the overview page linking to each repository's triage page."""
+    rows = "\n".join(
+        "<tr>"
+        f'<td><a href="{escape(s.href)}">{escape(s.repo)}</a></td>'
+        f'<td class="num">{s.total_open}</td>'
+        f'<td class="num">{s.linked}</td>'
+        f'<td class="num">{s.shown}</td>'
+        f'<td class="num">{"–" if s.best_score is None else f"{s.best_score:+d}"}</td>'
+        "</tr>"
+        for s in summaries
+    )
+    meta = f"{len(summaries)} repositories · generated {_when(generated_at)}"
+    return _document(
+        "Triage overview",
+        f"""<h1>Triage overview</h1>
+<p class="meta">{escape(meta)}</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Repository</th><th class="num">Open issues</th>
+<th class="num">With open PR</th><th class="num">Candidates</th>
+<th class="num">Best score</th></tr></thead>
+<tbody>
+{rows}
+</tbody>
+</table></div>""",
+    )
