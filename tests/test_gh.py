@@ -44,3 +44,12 @@ def test_graphql_passes_variables_and_unwraps_data(monkeypatch):
     monkeypatch.setattr(gh.subprocess, "run", fake_run)
     assert gh.graphql("q", owner="o") == [{"a": 1}]
     assert calls[0][-2:] == ["-f", "owner=o"]
+
+
+def test_redact_hides_url_credentials():
+    text = "fatal: unable to access 'https://user:s3cret@github.com/o/r.git/'"
+    assert (
+        gh.redact(text)
+        == "fatal: unable to access 'https://[REDACTED]@github.com/o/r.git/'"
+    )
+    assert gh.redact("git@github.com:o/r.git") == "git@github.com:o/r.git"  # no scheme

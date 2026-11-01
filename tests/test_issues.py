@@ -70,3 +70,9 @@ def test_rank_drops_linked_unless_asked():
     free, taken = _issue(1), _issue(2, labels={"bug"}, linked_prs=("p5",))
     assert rank([free, taken]) == [free]
     assert rank([free, taken], include_linked=True) == [taken, free]
+
+
+@pytest.mark.parametrize("repo", ["o/r\n", "o/..\n"])
+def test_fetch_rejects_trailing_newline(repo):
+    with pytest.raises(ValueError):
+        issues.fetch_open_issues(repo)

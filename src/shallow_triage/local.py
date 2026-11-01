@@ -5,12 +5,17 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from shallow_triage.gh import redact
+
 # a whole "-" or "/" separated part: fix-123-x, triage/issue-7, but not py3
 _ISSUE_IN_NAME_RE = re.compile(r"(?:^|[/-])(\d+)(?=$|[/-])")
 _CLOSES_RE = re.compile(
     r"\b(?:fix(?:e[sd])?|close[sd]?|resolve[sd]?)\b[:\s]+(?:issue\s+)?(?:#|gh-)(\d+)\b",
     re.I,
 )
+# Plain output whatever the user's git config says (color, external diff
+# tools, textconv filters); no rename detection so numstat has one path each.
+_DIFF_OPTS = ("--no-color", "--no-ext-diff", "--no-textconv", "--no-renames")
 _TEST_FILE_RE = re.compile(r"(^|/)(tests?/|test_[^/]*$|[^/]*_test\.py$)")
 
 
@@ -53,7 +58,7 @@ def _git(path: Path, *args: str) -> str:
         ["git", "-C", str(path), *args], capture_output=True, check=False
     )
     if proc.returncode != 0:
-        err = proc.stderr.decode("utf-8", "replace").strip()
+        err = redact(proc.stderr.decode("utf-8", "replace").strip())
         raise LocalError(f"git {args[0]} in {path}: {err}")
     return proc.stdout.decode("utf-8", "replace")
 
@@ -109,8 +114,9 @@ def fix_branches(path: Path, base: str, patterns: tuple[str, ...]) -> list[FixBr
         else:
             continue
         files = []
-        for line in _git(path, "diff", "--numstat", f"{base}...{name}").splitlines():
-            added, deleted, file = line.split("\t", 2)
+        numstat = _git(path, "diff", *_DIFF_OPTS, "--numstat", "-z", f"{base}...{name}")
+        for record in filter(None, numstat.split("\0")):
+            added, deleted, file = record.split("\t", 2)
             files.append(
                 FileChange(
                     file,
@@ -118,7 +124,7 @@ def fix_branches(path: Path, base: str, patterns: tuple[str, ...]) -> list[FixBr
                     None if deleted == "-" else int(deleted),
                 )
             )
-        diff = _git(path, "diff", f"{base}...{name}")
+        diff = _git(path, "diff", *_DIFF_OPTS, f"{base}...{name}")
         branches.append(FixBranch(name, issue, tuple(commits), tuple(files), diff))
     return branches
 

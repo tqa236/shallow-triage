@@ -39,9 +39,19 @@ def excerpt(body: str, limit: int = _EXCERPT_LEN) -> str:
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
+def _safe_href(url: str) -> bool:
+    """GitHub URLs and the site's own relative links; nothing with a scheme
+    like ``javascript:`` that would run in the page."""
+    if url.startswith("https://github.com/"):
+        return True
+    return ":" not in url and not url.startswith(("/", "\\"))
+
+
 def _link(url: str, text: str | None = None, cls: str = "") -> str:
     label = text if text is not None else url.removeprefix("https://github.com/")
     attr = f' class="{cls}"' if cls else ""
+    if not _safe_href(url):
+        return f"<span{attr}>{escape(label)}</span>"
     return f'<a{attr} href="{escape(url)}">{escape(label)}</a>'
 
 
@@ -94,13 +104,16 @@ def _diff_html(diff: str) -> str:
 
 
 def _commands(report: RepoReport, branch: FixBranch) -> str:
+    """Shell commands to copy. Every value is quoted: git allows ``;``, ``|``
+    and ``$`` in branch names, and the human pastes these into a shell."""
     cfg = report.config
     files = " ".join(shlex.quote(f) for f in branch.files_to_test)
     test = cfg.test.replace("{files}", files)
+    name = shlex.quote(branch.name)
     cmds = [
         f"cd {shlex.quote(str(cfg.path))}",
-        f"git diff {cfg.base}...{branch.name}",
-        f"git switch {branch.name} && {test}",
+        f"git diff {shlex.quote(f'{cfg.base}...{branch.name}')}",
+        f"git switch {name} && {test}",
     ]
     return escape("\n".join(cmds))
 

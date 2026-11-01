@@ -3,11 +3,13 @@
 The cache stores the raw GraphQL issue nodes. A run with a fresh enough cache
 only asks GitHub for issues updated since the previous run (open or closed),
 then adds, updates or drops them, so a large backlog is fetched in full only
-once per ``max_age``. The data is public issue content; no token is stored.
+once per ``max_age``. No token is stored, but entries for a private
+repository hold its private issue content, so files are owner-only.
 """
 
 import json
 import os
+import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -53,22 +55,43 @@ class IssueCache:
             )
         except (OSError, ValueError, KeyError, TypeError):
             return None
+        if not all(_well_formed(node) for node in entry.nodes.values()):
+            return None  # edited or corrupted: refetch rather than trust it
         if now - entry.full_fetch_at > self.max_age:
             return None
         return entry
 
     def save(self, repo: str, entry: CacheEntry) -> None:
         path = self._path(repo)
-        path.parent.mkdir(parents=True, exist_ok=True)
+        self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path.parent.mkdir(mode=0o700, exist_ok=True)
+        path.parent.chmod(0o700)  # also tightens folders from older versions
         data = {
             "version": CACHE_VERSION,
             "full_fetch_at": entry.full_fetch_at.isoformat(),
             "fetched_at": entry.fetched_at.isoformat(),
             "nodes": list(entry.nodes.values()),
         }
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data), encoding="utf-8")
-        tmp.replace(path)  # atomic, so an interrupted run leaves the old entry
+        # mkstemp: a new owner-only (0600) file with an unpredictable name;
+        # the rename is atomic, so an interrupted run leaves the old entry
+        fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+            os.replace(tmp, path)
+        except BaseException:
+            os.unlink(tmp)
+            raise
+
+
+def _well_formed(node: object) -> bool:
+    """The fields that end up in HTML attributes have the expected types."""
+    return (
+        isinstance(node, dict)
+        and type(node.get("number")) is int
+        and isinstance(node.get("url"), str)
+        and node["url"].startswith("https://github.com/")
+    )
 
 
 def now_utc() -> datetime:

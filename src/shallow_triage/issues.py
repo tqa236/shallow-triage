@@ -14,7 +14,7 @@ _GOOD_LABELS = {"bug", "good first issue", "documentation", "docs", "regression"
 _BAD_LABELS = {"question", "discussion", "needs-design", "wontfix", "duplicate"}
 
 # GitHub owner and repo names; also keeps them safe to use as file paths.
-_REPO_RE = re.compile(r"^[A-Za-z0-9-]+/(?!\.\.?$)[A-Za-z0-9._-]+$")
+_REPO_RE = re.compile(r"[A-Za-z0-9-]+/(?!\.\.?\Z)[A-Za-z0-9._-]+")
 
 # Without $since: every open issue. With $since: every issue (open or closed)
 # updated since then, which is enough to bring a cached copy up to date.
@@ -94,7 +94,7 @@ def fetch_open_issues(repo: str, cache: IssueCache | None = None) -> list[Issue]
 
     With a ``cache``, only issues updated since the last run are fetched.
     """
-    if not _REPO_RE.match(repo):
+    if not _REPO_RE.fullmatch(repo):
         raise ValueError(f"expected owner/name, got {repo!r}")
     if cache is None:
         return [Issue.from_graphql(n) for n in _fetch_nodes(repo)]
