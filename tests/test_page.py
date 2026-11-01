@@ -166,3 +166,58 @@ def test_fix_without_test_command_shows_switch_only():
     rep = _report(fixes=[FixEntry(branch, Issue(1, "t", "u", ""))], base="main")
     cmds = render_page(rep).split("<h3>Commands</h3>")[1].split("</pre>")[0]
     assert cmds.rstrip().endswith("git switch triage/issue-1")
+
+
+def test_badges_verified_findings_and_venv_commands():
+    from shallow_triage.findings import FIXED, NOT_REPRODUCIBLE, Finding
+    from shallow_triage.marks import CHANGED, SAFE
+
+    fixed = Finding(
+        3,
+        FIXED,
+        NOW,
+        commit="abcdef0123456789",
+        pr="https://github.com/o/r/pull/7",
+        method="bisect v1..main",
+    )
+    gone = Finding(4, NOT_REPRODUCIBLE, NOW, note="checked <by hand>")
+    branch = FixBranch(
+        "triage/issue-1",
+        1,
+        (Commit("a", "d", "s"),),
+        (FileChange("tests/test_x.py", 1, 0),),
+        "",
+    )
+    rep = _report(
+        candidates=[Candidate(Issue(2, "c", "https://github.com/o/r/issues/2", ""), 0)],
+        fixes=[FixEntry(branch, Issue(1, "f", "https://github.com/o/r/issues/1", ""))],
+        closable=[
+            Closable(
+                Issue(3, "x", "https://github.com/o/r/issues/3", ""), findings=(fixed,)
+            ),
+            Closable(
+                Issue(4, "y", "https://github.com/o/r/issues/4", ""), findings=(gone,)
+            ),
+        ],
+        safe=((1, CHANGED), (2, SAFE)),
+        base="main",
+        test="pytest {files}",
+        build="pip install -e .",
+        uses_venv=True,
+    )
+    html = render_page(rep)
+    assert '<span class="badge safe">marked safe</span>' in html
+    assert '<span class="badge changed">changed since marked safe</span>' in html
+    assert html.count('<span class="badge verified">verified</span>') == 2
+    assert (
+        'fixed by <a href="https://github.com/o/r/commit/abcdef0123456789">abcdef0123</a>'
+        in html
+    )
+    assert "o/r/pull/7" in html and "bisect v1..main" in html
+    assert "doesn't reproduce on the base" in html and "checked &lt;by hand&gt;" in html
+    cmds = html.split("<h3>Commands</h3>")[1].split("</pre>")[0]
+    assert "# in your clone of o/r, with its venv active" in cmds
+    assert (
+        "git switch triage/issue-1 &amp;&amp; pip install -e . &amp;&amp; pytest tests/test_x.py"
+        in cmds
+    )

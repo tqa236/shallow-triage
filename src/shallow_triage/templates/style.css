@@ -84,3 +84,9 @@ section, li.card { scroll-margin-top: 16px; }
 .toc ol ol { padding-left: 16px; margin-top: 4px; font-size: 0.875rem; }
 .toc .count { color: var(--muted); font-variant-numeric: tabular-nums; }
 h2 .top { font-size: 0.75rem; font-weight: 400; margin-left: 8px; }
+.badge {
+  display: inline-block; font-size: 0.75rem; font-weight: 600; padding: 0 6px;
+  border-radius: 4px; border: 1px solid currentColor; vertical-align: middle;
+}
+.badge.safe, .badge.verified { color: var(--plus); }
+.badge.changed { color: var(--minus); }

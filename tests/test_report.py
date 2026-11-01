@@ -162,3 +162,60 @@ def test_load_rejects_unreadable_files(tmp_path, content):
     path.write_text(content)
     with pytest.raises(ValueError, match="r.json"):
         report.load_report(path)
+
+
+def test_findings_and_safe_marks_in_the_report(tmp_path, monkeypatch):
+    from shallow_triage.findings import FIXED, Finding, Findings
+    from shallow_triage.marks import CHANGED, SAFE, Marks
+
+    issues = [
+        Issue(1, "plain", "u1", "body", frozenset({"bug"})),
+        Issue(2, "marked", "u2", "same body"),
+        Issue(3, "edited", "u3", "new body"),
+        Issue(4, "fixed upstream", "u4", ""),
+    ]
+    asked = {}
+
+    def fake_fetch(name, cache=None, *, batch, wanted, extra):
+        asked["wanted"] = wanted
+        return IssueSet(issues, total_open=4, complete=True)
+
+    monkeypatch.setattr(report, "fetch_issues", fake_fetch)
+    findings = Findings(tmp_path / "f", "o/r")
+    findings.add(Finding(4, FIXED, NOW, commit="abc", method="bisect"))
+    findings.add(Finding(99, FIXED, NOW))  # closed by now: not shown
+    marks = Marks(tmp_path / "m", "o/r")
+    marks.mark(2, "marked", "same body", NOW)
+    marks.mark(3, "edited", "old body", NOW)
+
+    rep = report.build_report(
+        RepoConfig("o/r", path=None),
+        limit=None,
+        include_linked=False,
+        generated_at=NOW,
+        findings=findings,
+        marks=marks,
+    )
+    assert set(asked["wanted"]) == {4, 99}  # findings' issues are looked up
+    assert [(c.issue.number, c.findings[0].commit) for c in rep.closable] == [
+        (4, "abc")
+    ]
+    assert rep.safe == ((2, SAFE), (3, CHANGED))
+    assert 4 not in [c.issue.number for c in rep.candidates]
+
+
+def test_verified_findings_sort_first():
+    from shallow_triage.findings import FIXED, Finding
+
+    old_verified = report.Closable(
+        Issue(1, "a", "u", ""), findings=(Finding(1, FIXED, NOW.replace(year=2020)),)
+    )
+    new_keyword = report.Closable(
+        Issue(2, "b", "u", ""), commits=(Commit("s", "2026-10-01", "Fixes #2"),)
+    )
+    ranked = sorted(
+        [new_keyword, old_verified],
+        key=lambda c: (bool(c.findings), c.latest),
+        reverse=True,
+    )
+    assert ranked[0] is old_verified

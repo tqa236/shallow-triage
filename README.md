@@ -66,21 +66,30 @@ for how input, data and output are separated.
 
 ## Using local clones
 
-To get fix branches and closable issues, describe each repository in a TOML
-file and pass it with `--config`:
+To get fix branches and closable issues, and to work on issues, describe each
+repository in a TOML file. The default location is
+`~/.config/shallow-triage/triage.toml`; another file can be passed with
+`--config`. It lists the local copy, its venv, and how to run code in it:
 
 ```toml
 [[repo]]
 name = "owner/project"               # required
 path = "~/src/project"               # local clone
+workdir = "~/src/project-triage"     # where fix, test and bisect run (default: path)
 base = "upstream/main"               # default: upstream/main
-test = "tox -e py -- {files}"        # default: python -m pytest {files}
+venv = "~/venv/project"              # activated for build, test and run
+build = "pip install -e ."           # after each checkout, if the project needs it
+test = "python -m pytest {files}"    # the default
+run = "python {script}"              # how to run a reproduction script (the default)
 branches = ["triage/issue-*"]        # default: ["triage/issue-*", "fix-*"]
 since = 2024-01-01                   # ignore older evidence for "closable"
 ```
 
+The config is trusted: `build`, `test` and `run` are shell commands run as
+written. Keep it private: it names your local folders.
+
 ```sh
-shallow-triage site --config triage.toml --fetch -o site/
+shallow-triage site --fetch -o site/
 ```
 
 - **Fix branches** are local branches matching `branches` that are not merged
@@ -92,10 +101,56 @@ shallow-triage site --config triage.toml --fetch -o site/
 - **`--fetch`** runs `git fetch` on the remote of `base` before reading, so
   the comparison uses the latest upstream. It changes only remote-tracking
   refs. Without it, the clones are only read.
-- **Closable** evidence is a commit on `base` whose message says `Fixes #N`,
-  `Closes #N` or `Resolves #N`, or a PR merged into the repository that was
-  linked to close the issue. Check that the issue no longer reproduces before
-  closing it.
+- **Closable** issues are those with a verified finding (see below), or that
+  a commit on `base` (`Fixes #N`, `Closes #N`, `Resolves #N`) or a merged PR
+  says it fixes. Verified ones are listed first.
+
+## Working on issues
+
+These commands run in a repository's `workdir` with its `venv` active and
+with credentials (`*_TOKEN`, `*_SECRET`, `*_API_KEY`, ...) removed from the
+environment. They refuse to start if the workdir has uncommitted changes.
+
+```sh
+shallow-triage fix owner/project 123        # create triage/issue-123 from base
+shallow-triage test owner/project           # build, then test what the branch changed
+shallow-triage bisect owner/project 123 --old v1.2.0 --script repro.py
+```
+
+`bisect` checks that the issue shows at `--old` and is fixed on `base`, then
+binary-searches the base's main line for the commit that fixed it, running
+`build` and `run` at each step. The script exits 0 when the issue is fixed,
+125 when it can't tell (the commit is skipped), and anything else when the
+issue shows. The workdir is put back on its branch afterwards. The result,
+with the PR the commit came from, is recorded as a verified finding.
+
+Findings can also be recorded by hand:
+
+```sh
+shallow-triage closable add owner/project 123 --commit abc123 --pr URL --method "ran repro on main"
+shallow-triage closable add owner/project 456 --status "not reproducible" --note "..."
+shallow-triage closable list owner/project
+shallow-triage closable remove owner/project 123
+```
+
+### Issues marked safe
+
+Code in an issue is written by anyone. Read the issue, and if its code is
+safe to run, mark it:
+
+```sh
+shallow-triage safe mark owner/project 123
+shallow-triage repro owner/project 123 -o repro.py   # its Python code blocks
+shallow-triage safe list owner/project
+```
+
+A mark records the title and body as they were. If either changes later,
+the mark no longer holds: `repro` refuses, and pages show "changed since
+marked safe" until the issue is reviewed and marked again. Pages show
+"marked safe" next to marked issues.
+
+Findings and marks are kept in `~/.local/share/shallow-triage/findings` and
+`.../safe`, readable only by you.
 
 ## Fetching and caching
 

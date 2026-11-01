@@ -13,8 +13,10 @@ from pathlib import Path
 from shallow_triage import gh
 from shallow_triage.cache import IssueCache
 from shallow_triage.config import RepoConfig
+from shallow_triage.findings import Findings
 from shallow_triage.issues import valid_repo
 from shallow_triage.local import LocalError
+from shallow_triage.marks import Marks
 from shallow_triage.page import page_href, render_index, render_page
 from shallow_triage.report import (
     RepoReport,
@@ -38,8 +40,13 @@ def collect(
     cache: IssueCache | None = None,
     fetch: bool = False,
     batch: int | None = 100,
+    findings_dir: Path | None = None,
+    marks_dir: Path | None = None,
 ) -> tuple[list[RepoReport], list[str]]:
     """Build and save a report for each repository.
+
+    ``findings_dir`` and ``marks_dir`` hold the user's recorded findings and
+    safe marks; without them, reports have neither.
 
     Returns the reports in config order (duplicates dropped) and the names
     of the repositories that failed; their errors are printed to stderr.
@@ -52,6 +59,7 @@ def collect(
 
     def build(config: RepoConfig) -> RepoReport | Exception:
         try:
+            ok = valid_repo(config.name)
             return build_report(
                 config,
                 limit=limit,
@@ -60,6 +68,10 @@ def collect(
                 cache=cache,
                 fetch=fetch,
                 batch=batch,
+                findings=Findings(findings_dir, config.name)
+                if findings_dir and ok
+                else None,
+                marks=Marks(marks_dir, config.name) if marks_dir and ok else None,
             )
         except (gh.GhError, LocalError, ValueError) as exc:
             return exc
@@ -103,6 +115,8 @@ def build_site(
     cache: IssueCache | None = None,
     fetch: bool = False,
     batch: int | None = 100,
+    findings_dir: Path | None = None,
+    marks_dir: Path | None = None,
 ) -> list[str]:
     """Collect, then render. Returns the repositories that failed.
 
@@ -118,6 +132,8 @@ def build_site(
         cache=cache,
         fetch=fetch,
         batch=batch,
+        findings_dir=findings_dir,
+        marks_dir=marks_dir,
     )
     for name in failed:
         if not valid_repo(name):

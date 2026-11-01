@@ -245,6 +245,16 @@ def fetch_issues(
     )
 
 
+def fetch_issue(repo: str, number: int) -> Issue | None:
+    """Issue ``number`` as it is now (open or closed); None if there is no
+    such issue (or it is a pull request)."""
+    if not valid_repo(repo):
+        raise ValueError(f"expected owner/name, got {repo!r}")
+    owner, name = repo.split("/")
+    node = _lookup(owner, name, [number])[number]
+    return None if node is None else Issue.from_graphql(node)
+
+
 def fetch_open_issues(repo: str, cache: IssueCache | None = None) -> list[Issue]:
     """Every open issue of ``owner/name``."""
     return fetch_issues(repo, cache, batch=None).issues

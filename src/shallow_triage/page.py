@@ -19,8 +19,10 @@ from importlib.resources import files
 from pathlib import Path
 from string import Template
 
+from shallow_triage.findings import FIXED, Finding
 from shallow_triage.issues import Issue
 from shallow_triage.local import FixBranch
+from shallow_triage.marks import CHANGED, SAFE
 from shallow_triage.report import Candidate, Closable, FixEntry, RepoReport
 
 _CODE_BLOCK_RE = re.compile(r"```.*?(```|$)", re.S)
@@ -61,8 +63,15 @@ def _link(url: str, text: str | None = None, cls: str = "") -> str:
     return f'<a{attr} href="{escape(url)}">{escape(label)}</a>'
 
 
-def _issue_title(issue: Issue) -> str:
-    return _link(issue.url, f"#{issue.number} {issue.title}", cls="title")
+def _issue_title(issue: Issue, report: RepoReport | None = None) -> str:
+    """The issue's linked title, with its safe mark if it has one."""
+    title = _link(issue.url, f"#{issue.number} {issue.title}", cls="title")
+    state = dict(report.safe).get(issue.number) if report else None
+    if state == SAFE:
+        title += ' <span class="badge safe">marked safe</span>'
+    elif state == CHANGED:
+        title += ' <span class="badge changed">changed since marked safe</span>'
+    return title
 
 
 def _linked_prs(issue: Issue) -> str:
@@ -72,7 +81,7 @@ def _linked_prs(issue: Issue) -> str:
     return f'<p class="linked">Open PRs: {links}</p>'
 
 
-def _candidate_html(candidate: Candidate) -> str:
+def _candidate_html(report: RepoReport, candidate: Candidate) -> str:
     issue = candidate.issue
     reasons = "".join(
         f'<span class="{"plus" if pts > 0 else "minus"}">{pts:+d} {escape(why)}</span>'
@@ -81,7 +90,7 @@ def _candidate_html(candidate: Candidate) -> str:
     return _render(
         "candidate.html",
         score=f"{candidate.score:+d}",
-        title=_issue_title(issue),
+        title=_issue_title(issue, report),
         excerpt=escape(excerpt(issue.body)),
         reasons=reasons or "<span>no signals</span>",
         linked_prs=_linked_prs(issue),
@@ -114,13 +123,18 @@ def _commands(report: RepoReport, branch: FixBranch) -> str:
     """Shell commands to copy. Every value is quoted: git allows ``;``, ``|``
     and ``$`` in branch names, and the human pastes these into a shell."""
     files = " ".join(shlex.quote(f) for f in branch.files_to_test)
-    switch = f"git switch {shlex.quote(branch.name)}"
+    where = f"# in your clone of {report.repo}"
+    if report.uses_venv:
+        where += ", with its venv active"
+    steps = [f"git switch {shlex.quote(branch.name)}"]
+    if report.build:
+        steps.append(report.build)
+    if report.test:
+        steps.append(report.test.replace("{files}", files))
     cmds = [
-        f"# in your clone of {report.repo}",
+        where,
         f"git diff {shlex.quote(f'{report.base}...{branch.name}')}",
-        f"{switch} && {report.test.replace('{files}', files)}"
-        if report.test
-        else switch,
+        " && ".join(steps),
     ]
     return escape("\n".join(cmds))
 
@@ -146,7 +160,7 @@ def _fix_html(report: RepoReport, entry: FixEntry) -> str:
     return _render(
         "fix.html",
         number=entry.issue.number,
-        title=_issue_title(entry.issue),
+        title=_issue_title(entry.issue, report),
         branch=escape(b.name),
         sha=escape(b.commits[-1].sha[:10]),
         date=escape(b.commits[-1].date),
@@ -163,17 +177,41 @@ def _fix_html(report: RepoReport, entry: FixEntry) -> str:
 
 def _closable_html(report: RepoReport, item: Closable) -> str:
     repo = report.repo
-    evidence = [
+    evidence = [_finding_html(repo, f) for f in item.findings]
+    evidence += [
         f"<li>{_link(f'https://github.com/{repo}/commit/{c.sha}', c.sha[:10])} "
         f"({escape(c.date)}) {escape(c.subject)}</li>"
         for c in item.commits
-    ] + [f"<li>merged PR {_link(u)} ({escape(d)})</li>" for u, d in item.merged_prs]
+    ]
+    evidence += [
+        f"<li>merged PR {_link(u)} ({escape(d)})</li>" for u, d in item.merged_prs
+    ]
     return _render(
         "closable.html",
         number=item.issue.number,
-        title=_issue_title(item.issue),
+        title=_issue_title(item.issue, report),
         evidence="".join(evidence),
     )
+
+
+def _finding_html(repo: str, finding: Finding) -> str:
+    parts = ['<span class="badge verified">verified</span>']
+    if finding.status == FIXED:
+        what = "fixed"
+        if finding.commit:
+            url = f"https://github.com/{repo}/commit/{finding.commit}"
+            what += f" by {_link(url, finding.commit[:10])}"
+        if finding.pr:
+            what += f" ({_link(finding.pr)})"
+        parts.append(what)
+    else:
+        parts.append("doesn't reproduce on the base")
+    if finding.method:
+        parts.append(f"· {escape(finding.method)}")
+    if finding.note:
+        parts.append(f"· {escape(finding.note)}")
+    parts.append(f"· {escape(finding.recorded_at.date().isoformat())}")
+    return f"<li>{' '.join(parts)}</li>"
 
 
 def _section(id_: str, title: str, note: str, items: list[str]) -> str:
@@ -267,8 +305,9 @@ def render_page(report: RepoReport, *, back_href: str | None = None) -> str:
         _section(
             "closable",
             "Possibly closable",
-            "Open issues that a commit on the base branch or a merged PR "
-            "says it fixes. Check that each no longer reproduces before closing.",
+            "Open issues checked to be fixed (verified), or that a commit on the "
+            "base branch or a merged PR says it fixes. Check the unverified ones "
+            "no longer reproduce before closing.",
             [_closable_html(report, c) for c in report.closable],
         ),
         _closed_fixes_html(report),
@@ -276,7 +315,7 @@ def render_page(report: RepoReport, *, back_href: str | None = None) -> str:
             "candidates",
             "Candidates",
             "Open issues without a fix yet, ranked by how well-scoped they look.",
-            [_candidate_html(i) for i in report.candidates],
+            [_candidate_html(report, c) for c in report.candidates],
         ),
     ]
     coverage = f"{report.total_open} open issues"

@@ -46,3 +46,11 @@ class GitRepo:
 @pytest.fixture
 def git_repo(tmp_path):
     return GitRepo(tmp_path)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_home(tmp_path_factory, monkeypatch):
+    """Keep tests away from the user's real config, data and cache."""
+    root = tmp_path_factory.mktemp("xdg")
+    for var in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"):
+        monkeypatch.setenv(var, str(root / var.lower()))
