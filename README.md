@@ -73,7 +73,7 @@ shallow-triage site --config triage.toml --fetch -o site/
 - **Fix branches** are local branches matching `branches` that are not merged
   into `base`. The issue number comes from the branch name
   (`triage/issue-123`, `fix-123-short-name`) or else from `Fixes #123` in a
-  commit message. Branches whose issue has closed are listed separately.
+  commit message. Branches without an open issue are listed separately.
 - **`{files}`** in `test` becomes the changed test files, or every changed
   file when the branch changes no test file (for doctest-based projects).
 - **`--fetch`** runs `git fetch` on the remote of `base` before reading, so
