@@ -208,7 +208,7 @@ def _toc_html(report: RepoReport) -> str:
     entries = [
         ("ready", "Ready to review", len(report.fixes), fixes),
         ("closable", "Possibly closable", len(report.closable), ""),
-        ("closed", "Fix branches whose issue is closed", len(report.closed_fixes), ""),
+        ("closed", "Fix branches without an open issue", len(report.closed_fixes), ""),
         ("candidates", "Candidates", len(report.candidates), ""),
     ]
     items = "\n".join(

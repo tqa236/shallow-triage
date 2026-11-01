@@ -118,7 +118,7 @@ instructions.
 7. **Rebuild and check.** Run step 1 again without `--fetch`. Open the
    repository's page and confirm the branch is under "Ready to review" with
    the right issue, files and commands. A branch whose issue has closed in
-   the meantime is listed under "Fix branches whose issue is no longer open";
+   the meantime is listed under "Fix branches without an open issue";
    don't delete it, tell the human.
 
 8. **Hand off.** Tell the human:

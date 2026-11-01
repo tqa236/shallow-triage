@@ -73,7 +73,10 @@ def test_render_page_fixes_and_closable():
     assert "git switch triage/issue-7 &amp;&amp; bin/test tests/test_m.py" in html
     assert "https://github.com/o/r/commit/1234567890ab" in html
     assert "Compared with <code>upstream/main</code> @ <code>feedbeef00" in html
-    assert "no longer open (1)" in html and "https://github.com/o/r/issues/9" in html
+    assert (
+        "without an open issue (1)" in html
+        and "https://github.com/o/r/issues/9" in html
+    )
     assert "$" not in html  # every template placeholder was filled
 
     # contents link to each non-empty section and to each fix
