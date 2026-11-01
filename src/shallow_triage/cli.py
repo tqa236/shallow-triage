@@ -10,10 +10,11 @@ and fixing commits from local clones (see :mod:`shallow_triage.config`).
 import argparse
 import json
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from shallow_triage import gh
+from shallow_triage.cache import IssueCache, default_cache_dir
 from shallow_triage.config import RepoConfig, load_config
 from shallow_triage.issues import fetch_open_issues, rank, score_issue
 from shallow_triage.page import render_page
@@ -28,6 +29,32 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="keep issues that already have an open linked PR",
     )
+    cache = parser.add_argument_group("cache")
+    cache.add_argument(
+        "--cache-dir",
+        type=Path,
+        default=default_cache_dir(),
+        help="where fetched issues are kept (default: %(default)s)",
+    )
+    cache.add_argument(
+        "--no-cache", action="store_true", help="always fetch everything"
+    )
+    cache.add_argument(
+        "--refresh", action="store_true", help="refetch everything and update the cache"
+    )
+    cache.add_argument(
+        "--max-age",
+        type=float,
+        default=24,
+        metavar="HOURS",
+        help="refetch everything when the last full fetch is older (default: 24)",
+    )
+
+
+def _cache(args: argparse.Namespace) -> IssueCache | None:
+    if args.no_cache:
+        return None
+    return IssueCache(args.cache_dir, timedelta(hours=args.max_age), args.refresh)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -49,6 +76,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     _add_common(site)
     site.add_argument("-o", "--output", type=Path, required=True, help="directory")
+    site.add_argument(
+        "--fetch",
+        action="store_true",
+        help="git fetch each clone's base remote first (changes only remote refs)",
+    )
     args = parser.parse_args(argv)
 
     if args.command == "site":
@@ -67,6 +99,8 @@ def main(argv: list[str] | None = None) -> int:
             limit=args.limit,
             include_linked=args.include_linked,
             generated_at=datetime.now(UTC),
+            cache=_cache(args),
+            fetch=args.fetch,
         )
         return 1 if failed else 0
 
@@ -76,6 +110,7 @@ def main(argv: list[str] | None = None) -> int:
                 RepoConfig(args.repo),
                 limit=args.limit,
                 include_linked=args.include_linked,
+                cache=_cache(args),
             )
         except (gh.GhError, ValueError) as exc:
             print(f"error: {exc}", file=sys.stderr)
@@ -88,7 +123,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     try:
-        issues = fetch_open_issues(args.repo)
+        issues = fetch_open_issues(args.repo, _cache(args))
     except (gh.GhError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

@@ -72,6 +72,16 @@ def closing_refs(text: str) -> list[int]:
     return [int(n) for n in _CLOSES_RE.findall(text)]
 
 
+def fetch_base(path: Path, base: str) -> None:
+    """``git fetch`` the remote that ``base`` (e.g. ``upstream/main``) is on.
+
+    Only remote-tracking refs change. A local branch as base is left alone.
+    """
+    remote = base.split("/", 1)[0]
+    if "/" in base and remote in _git(path, "remote").split():
+        _git(path, "fetch", "--quiet", remote)
+
+
 def base_commit(path: Path, base: str) -> Commit:
     return _log(path, "-1", base)[0]
 

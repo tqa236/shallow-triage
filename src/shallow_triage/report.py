@@ -3,6 +3,7 @@
 from dataclasses import dataclass, field
 
 from shallow_triage import local
+from shallow_triage.cache import IssueCache
 from shallow_triage.config import RepoConfig
 from shallow_triage.issues import Issue, fetch_open_issues, rank
 from shallow_triage.local import Commit, FixBranch
@@ -43,10 +44,20 @@ class RepoReport:
 
 
 def build_report(
-    config: RepoConfig, *, limit: int | None, include_linked: bool
+    config: RepoConfig,
+    *,
+    limit: int | None,
+    include_linked: bool,
+    cache: IssueCache | None = None,
+    fetch: bool = False,
 ) -> RepoReport:
-    """Fetch issues from GitHub and, if configured, read the local clone."""
-    issues = fetch_open_issues(config.name)
+    """Fetch issues from GitHub and, if configured, read the local clone.
+
+    With ``fetch``, the clone's base remote is fetched first.
+    """
+    if fetch and config.path is not None:
+        local.fetch_base(config.path, config.base)
+    issues = fetch_open_issues(config.name, cache)
     by_number = {i.number: i for i in issues}
     fixes: list[FixEntry] = []
     closed: list[FixBranch] = []

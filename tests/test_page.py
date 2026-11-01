@@ -72,3 +72,20 @@ def test_render_page_fixes_and_closable():
     assert "upstream/main</code> @ <code>feedbeef00" in html
     assert "no longer open (1)" in html and "https://github.com/o/r/issues/9" in html
     assert "$" not in html  # every template placeholder was filled
+
+    # contents link to each non-empty section and to each fix
+    toc = html.split('<nav class="toc"')[1].split("</nav>")[0]
+    for anchor in ["#ready", "#closable", "#closed", "#issue-7"]:
+        assert f'href="{anchor}"' in toc
+    assert "#candidates" not in toc  # empty section left out
+    for target in ['id="ready"', 'id="closable"', 'id="closed"', 'id="issue-7"']:
+        assert target in html
+
+
+def test_render_index_links_counts_to_sections():
+    from shallow_triage.page import RepoSummary, render_index
+
+    html = render_index([RepoSummary("o/r", "o/r.html", 9, 2, 0, 5)], generated_at=NOW)
+    assert 'href="o/r.html#ready">2</a>' in html
+    assert 'href="o/r.html#candidates">5</a>' in html
+    assert "#closable" not in html  # zero is not a link

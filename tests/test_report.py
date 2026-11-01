@@ -24,7 +24,7 @@ def test_build_report_splits_issues(git_repo, monkeypatch):
         Issue(5, "old merged pr", "u5", "", merged_prs=((PR, "2019-05-01"),)),
         Issue(6, "fork pr", "u6", "", merged_prs=((FORK_PR, "2026-05-01"),)),
     ]
-    monkeypatch.setattr(report, "fetch_open_issues", lambda name: issues)
+    monkeypatch.setattr(report, "fetch_open_issues", lambda name, cache=None: issues)
     rep = report.build_report(
         RepoConfig("o/r", path=r.path, base="main", since="2020-01-01"),
         limit=None,
@@ -42,7 +42,7 @@ def test_build_report_splits_issues(git_repo, monkeypatch):
 
 def test_build_report_without_clone(monkeypatch):
     monkeypatch.setattr(
-        report, "fetch_open_issues", lambda name: [Issue(5, "t", "u", "")]
+        report, "fetch_open_issues", lambda name, cache=None: [Issue(5, "t", "u", "")]
     )
     rep = report.build_report(RepoConfig("o/r"), limit=None, include_linked=False)
     assert rep.base is None and rep.fixes == [] and len(rep.candidates) == 1

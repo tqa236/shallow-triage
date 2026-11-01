@@ -7,7 +7,7 @@ from shallow_triage.issues import Issue
 NOW = datetime(2026, 11, 1, tzinfo=UTC)
 
 
-def _fake_fetch(repo):
+def _fake_fetch(repo, cache=None):
     if repo == "o/broken":
         raise gh.GhError("not found")
     return [
