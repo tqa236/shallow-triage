@@ -24,8 +24,8 @@ query($owner: String!, $name: String!, $endCursor: String) {
         comments { totalCount }
         assignees(first: 1) { totalCount }
         labels(first: 20) { nodes { name } }
-        closedByPullRequestsReferences(first: 10, includeClosedPrs: false) {
-          nodes { url state }
+        closedByPullRequestsReferences(first: 10, includeClosedPrs: true) {
+          nodes { url state mergedAt }
         }
       }
     }
@@ -43,7 +43,9 @@ class Issue:
     labels: frozenset[str] = field(default_factory=frozenset)
     comments: int = 0
     assigned: bool = False
-    linked_prs: tuple[str, ...] = ()  # PR URLs; may be in other repos
+    linked_prs: tuple[str, ...] = ()  # open PR URLs; may be in other repos
+    # (url, merge date) of merged PRs that claimed to close it
+    merged_prs: tuple[tuple[str, str], ...] = ()
 
     @classmethod
     def from_graphql(cls, node: dict) -> "Issue":
@@ -57,11 +59,16 @@ class Issue:
             comments=node["comments"]["totalCount"],
             assigned=node["assignees"]["totalCount"] > 0,
             linked_prs=tuple(pr["url"] for pr in prs if pr["state"] == "OPEN"),
+            merged_prs=tuple(
+                (pr["url"], pr["mergedAt"][:10])
+                for pr in prs
+                if pr["state"] == "MERGED"
+            ),
         )
 
 
 def fetch_open_issues(repo: str) -> list[Issue]:
-    """Return open issues for ``owner/name``, with their open linked PRs."""
+    """Return open issues for ``owner/name``, with their linked PRs."""
     if not _REPO_RE.match(repo):
         raise ValueError(f"expected owner/name, got {repo!r}")
     owner, name = repo.split("/")

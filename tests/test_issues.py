@@ -18,7 +18,10 @@ def _node(n, prs=()):
         "assignees": {"totalCount": 0},
         "labels": {"nodes": [{"name": "Bug"}]},
         "closedByPullRequestsReferences": {
-            "nodes": [{"url": url, "state": state} for url, state in prs]
+            "nodes": [
+                {"url": url, "state": state, "mergedAt": "2026-01-02T03:04:05Z"}
+                for url, state in prs
+            ]
         },
     }
 
@@ -31,6 +34,7 @@ def test_fetch_parses_pages_and_open_linked_prs(monkeypatch):
     monkeypatch.setattr(issues.gh, "graphql", lambda *a, **k: pages)
     got = issues.fetch_open_issues("o/r")
     assert [(i.number, i.linked_prs) for i in got] == [(1, ("p10",)), (2, ())]
+    assert [i.merged_prs for i in got] == [(), (("p11", "2026-01-02"),)]
     assert got[0].labels == {"bug"}
 
 

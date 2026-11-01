@@ -3,7 +3,8 @@
 ``shallow-triage candidates owner/repo`` prints ranked issues as JSON;
 ``shallow-triage page owner/repo -o triage.html`` renders them as HTML;
 ``shallow-triage site owner/a owner/b -o site/`` renders an index plus one
-page per repository.
+page per repository. ``site --config triage.toml`` also reads fix branches
+and fixing commits from local clones (see :mod:`shallow_triage.config`).
 """
 
 import argparse
@@ -13,8 +14,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from shallow_triage import gh
+from shallow_triage.config import RepoConfig, load_config
 from shallow_triage.issues import fetch_open_issues, rank, score_issue
 from shallow_triage.page import render_page
+from shallow_triage.report import build_report
 from shallow_triage.site import build_site
 
 
@@ -40,14 +43,26 @@ def main(argv: list[str] | None = None) -> int:
         "-o", "--output", type=Path, help="write to this file instead of stdout"
     )
     site = sub.add_parser("site", help="render an index plus one page per repo")
-    site.add_argument("repos", nargs="+", metavar="repo", help="owner/name")
+    site.add_argument("repos", nargs="*", metavar="repo", help="owner/name")
+    site.add_argument(
+        "-c", "--config", type=Path, help="TOML file listing repos and local clones"
+    )
     _add_common(site)
     site.add_argument("-o", "--output", type=Path, required=True, help="directory")
     args = parser.parse_args(argv)
 
     if args.command == "site":
+        repos = [RepoConfig(name) for name in args.repos]
+        if args.config:
+            try:
+                repos += load_config(args.config)
+            except (OSError, ValueError) as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 1
+        if not repos:
+            parser.error("site: give at least one repo or --config")
         failed = build_site(
-            args.repos,
+            repos,
             args.output,
             limit=args.limit,
             include_linked=args.include_linked,
@@ -55,26 +70,29 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1 if failed else 0
 
-    try:
-        issues = fetch_open_issues(args.repo)
-    except (gh.GhError, ValueError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
-    ranked = rank(issues, args.limit, include_linked=args.include_linked)
-
     if args.command == "page":
-        html = render_page(
-            args.repo,
-            ranked,
-            total_open=len(issues),
-            generated_at=datetime.now(UTC),
-        )
+        try:
+            report = build_report(
+                RepoConfig(args.repo),
+                limit=args.limit,
+                include_linked=args.include_linked,
+            )
+        except (gh.GhError, ValueError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        html = render_page(report, generated_at=datetime.now(UTC))
         if args.output:
             args.output.write_text(html, encoding="utf-8")
         else:
             sys.stdout.write(html)
         return 0
 
+    try:
+        issues = fetch_open_issues(args.repo)
+    except (gh.GhError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    ranked = rank(issues, args.limit, include_linked=args.include_linked)
     out = [
         {
             "number": i.number,

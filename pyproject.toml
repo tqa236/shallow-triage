@@ -49,6 +49,7 @@ line-length = 88
 
 [tool.ruff.lint]
 select = ["B", "C4", "E", "F", "I", "T10", "W", "UP"]
+ignore = ["E501"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "pep257"

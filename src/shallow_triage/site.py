@@ -5,12 +5,14 @@ from datetime import datetime
 from pathlib import Path
 
 from shallow_triage import gh
-from shallow_triage.issues import fetch_open_issues, rank, score_issue
+from shallow_triage.config import RepoConfig
+from shallow_triage.local import LocalError
 from shallow_triage.page import RepoSummary, render_index, render_page
+from shallow_triage.report import build_report
 
 
 def build_site(
-    repos: list[str],
+    repos: list[RepoConfig],
     out_dir: Path,
     *,
     limit: int | None,
@@ -22,35 +24,31 @@ def build_site(
     A repository that fails to load is reported on stderr and left out of the
     index; the others are still written. Returns the repositories that failed.
     """
-    summaries, failed = [], []
-    for repo in dict.fromkeys(repos):  # dedupe, keep order
-        try:
-            issues = fetch_open_issues(repo)
-        except (gh.GhError, ValueError) as exc:
-            print(f"error: {repo}: {exc}", file=sys.stderr)
-            failed.append(repo)
+    summaries, failed, seen = [], [], set()
+    for config in repos:
+        if config.name in seen:
             continue
-        ranked = rank(issues, limit, include_linked=include_linked)
-        path = out_dir / f"{repo}.html"
+        seen.add(config.name)
+        try:
+            report = build_report(config, limit=limit, include_linked=include_linked)
+        except (gh.GhError, LocalError, ValueError) as exc:
+            print(f"error: {config.name}: {exc}", file=sys.stderr)
+            failed.append(config.name)
+            continue
+        path = out_dir / f"{config.name}.html"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
-            render_page(
-                repo,
-                ranked,
-                total_open=len(issues),
-                generated_at=generated_at,
-                back_href="../index.html",
-            ),
+            render_page(report, generated_at=generated_at, back_href="../index.html"),
             encoding="utf-8",
         )
         summaries.append(
             RepoSummary(
-                repo=repo,
-                href=f"{repo}.html",
-                total_open=len(issues),
-                linked=sum(1 for i in issues if i.linked_prs),
-                shown=len(ranked),
-                best_score=max(map(score_issue, ranked), default=None),
+                repo=config.name,
+                href=f"{config.name}.html",
+                total_open=report.total_open,
+                fixes=len(report.fixes),
+                closable=len(report.closable),
+                candidates=len(report.candidates),
             )
         )
     out_dir.mkdir(parents=True, exist_ok=True)
