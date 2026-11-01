@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=77.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shallow-triage"
+version = "0.1.0"
+description = "Common tooling for building issue triage pages for a repository's backlog"
+readme = "README.md"
+# SPEC-0: support Python versions released within the last 36 months
+# (3.12 dropped 2026-Q4).
+requires-python = ">=3.13"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+  {name = "Trinh Quoc Anh", email = "trinhquocanh@proton.me"},
+]
+maintainers = [
+  {name = "Trinh Quoc Anh", email = "trinhquocanh@proton.me"},
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Topic :: Software Development :: Bug Tracking",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: 3 :: Only",
+]
+dependencies = []
+
+[project.scripts]
+shallow-triage = "shallow_triage.cli:main"
+
+[dependency-groups]
+dev = [{include-group = "test"}, {include-group = "lint"}]
+test = ["pytest"]
+lint = ["ruff", "sp-repo-review[cli]"]
+
+[tool.pytest.ini_options]
+minversion = "6"
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-config", "--strict-markers"]
+log_level = "INFO"
+xfail_strict = true
+filterwarnings = ["error"]
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["B", "C4", "E", "F", "I", "T10", "W", "UP"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "pep257"
