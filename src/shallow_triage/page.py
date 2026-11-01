@@ -149,15 +149,19 @@ def _closable_html(report: RepoReport, item: Closable) -> str:
         for c in item.commits
     ] + [f"<li>merged PR {_link(u)} ({escape(d)})</li>" for u, d in item.merged_prs]
     return _render(
-        "closable.html", title=_issue_title(item.issue), evidence="".join(evidence)
+        "closable.html",
+        number=item.issue.number,
+        title=_issue_title(item.issue),
+        evidence="".join(evidence),
     )
 
 
-def _section(title: str, note: str, items: list[str]) -> str:
+def _section(id_: str, title: str, note: str, items: list[str]) -> str:
     if not items:
         return ""
     return _render(
         "section.html",
+        id=id_,
         title=escape(title),
         count=len(items),
         note=escape(note),
@@ -175,6 +179,29 @@ def _closed_fixes_html(report: RepoReport) -> str:
         for b in report.closed_fixes
     )
     return _render("closed_fixes.html", count=len(report.closed_fixes), items=items)
+
+
+def _toc_html(report: RepoReport) -> str:
+    """Contents: each non-empty section, and under "Ready to review" each fix."""
+    fixes = "".join(
+        f'<li><a href="#issue-{f.issue.number}">'
+        f"#{f.issue.number} {escape(f.issue.title)}</a></li>"
+        for f in report.fixes
+    )
+    entries = [
+        ("ready", "Ready to review", len(report.fixes), fixes),
+        ("closable", "Possibly closable", len(report.closable), ""),
+        ("closed", "Fix branches whose issue is closed", len(report.closed_fixes), ""),
+        ("candidates", "Candidates", len(report.candidates), ""),
+    ]
+    items = "\n".join(
+        f'<li><a href="#{id_}">{title}</a> <span class="count">{count}</span>'
+        + (f"<ol>{sub}</ol>" if sub else "")
+        + "</li>"
+        for id_, title, count, sub in entries
+        if count
+    )
+    return _render("toc.html", items=items) if items else ""
 
 
 def _document(title: str, body: str) -> str:
@@ -205,11 +232,13 @@ def render_page(
         )
     sections = [
         _section(
+            "ready",
             "Ready to review",
             "Local fix branches for open issues, newest first.",
             [_fix_html(report, f) for f in report.fixes],
         ),
         _section(
+            "closable",
             "Possibly closable",
             "Open issues that a commit on the base branch or a merged PR "
             "says it fixes. Check that each no longer reproduces before closing.",
@@ -217,6 +246,7 @@ def render_page(
         ),
         _closed_fixes_html(report),
         _section(
+            "candidates",
             "Candidates",
             "Open issues without a fix yet, ranked by how well-scoped they look.",
             [_candidate_html(i) for i in report.candidates],
@@ -229,6 +259,7 @@ def render_page(
         repo_link=_link(f"https://github.com/{repo}", repo),
         meta=escape(meta),
         facts=facts,
+        toc=_toc_html(report),
         sections="\n".join(s for s in sections if s),
     )
     return _document(f"{repo} triage", body)
@@ -248,14 +279,18 @@ class RepoSummary:
 
 def render_index(summaries: list[RepoSummary], *, generated_at: datetime) -> str:
     """Return the overview page linking to each repository's triage page."""
+
+    def count(s: RepoSummary, n: int, section: str) -> str:
+        return _link(f"{s.href}#{section}", str(n)) if n else "0"
+
     rows = "".join(
         _render(
             "index_row.html",
             repo_link=_link(s.href, s.repo),
             total_open=s.total_open,
-            fixes=s.fixes,
-            closable=s.closable,
-            candidates=s.candidates,
+            fixes=count(s, s.fixes, "ready"),
+            closable=count(s, s.closable, "closable"),
+            candidates=count(s, s.candidates, "candidates"),
         )
         for s in summaries
     )

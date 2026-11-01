@@ -2,8 +2,10 @@
 
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 
 from shallow_triage import gh
+from shallow_triage.cache import CacheEntry, IssueCache, now_utc
 
 _REPRO_RE = re.compile(
     r"(steps to reproduce|minimal (reproducible )?example|traceback|```)", re.I
@@ -14,13 +16,15 @@ _BAD_LABELS = {"question", "discussion", "needs-design", "wontfix", "duplicate"}
 # GitHub owner and repo names; also keeps them safe to use as file paths.
 _REPO_RE = re.compile(r"^[A-Za-z0-9-]+/(?!\.\.?$)[A-Za-z0-9._-]+$")
 
+# Without $since: every open issue. With $since: every issue (open or closed)
+# updated since then, which is enough to bring a cached copy up to date.
 _ISSUES_QUERY = """
-query($owner: String!, $name: String!, $endCursor: String) {
+query($owner: String!, $name: String!, $endCursor: String%(since_var)s) {
   repository(owner: $owner, name: $name) {
-    issues(states: OPEN, first: 100, after: $endCursor) {
+    issues(states: %(states)s, first: 100, after: $endCursor%(filter)s) {
       pageInfo { hasNextPage endCursor }
       nodes {
-        number title url body
+        number state title url body
         comments { totalCount }
         assignees(first: 1) { totalCount }
         labels(first: 20) { nodes { name } }
@@ -32,6 +36,14 @@ query($owner: String!, $name: String!, $endCursor: String) {
   }
 }
 """
+_FULL_QUERY = _ISSUES_QUERY % {"since_var": "", "states": "OPEN", "filter": ""}
+_SINCE_QUERY = _ISSUES_QUERY % {
+    "since_var": ", $since: DateTime!",
+    "states": "[OPEN, CLOSED]",
+    "filter": ", filterBy: {since: $since}",
+}
+# Margin for clock skew between this machine and GitHub.
+_SINCE_SKEW = timedelta(minutes=5)
 
 
 @dataclass(frozen=True)
@@ -67,17 +79,41 @@ class Issue:
         )
 
 
-def fetch_open_issues(repo: str) -> list[Issue]:
-    """Return open issues for ``owner/name``, with their linked PRs."""
+def _fetch_nodes(repo: str, since: datetime | None = None) -> list[dict]:
+    owner, name = repo.split("/")
+    if since is None:
+        pages = gh.graphql(_FULL_QUERY, owner=owner, name=name)
+    else:
+        stamp = (since - _SINCE_SKEW).strftime("%Y-%m-%dT%H:%M:%SZ")
+        pages = gh.graphql(_SINCE_QUERY, owner=owner, name=name, since=stamp)
+    return [node for page in pages for node in page["repository"]["issues"]["nodes"]]
+
+
+def fetch_open_issues(repo: str, cache: IssueCache | None = None) -> list[Issue]:
+    """Return open issues for ``owner/name``, with their linked PRs.
+
+    With a ``cache``, only issues updated since the last run are fetched.
+    """
     if not _REPO_RE.match(repo):
         raise ValueError(f"expected owner/name, got {repo!r}")
-    owner, name = repo.split("/")
-    pages = gh.graphql(_ISSUES_QUERY, owner=owner, name=name)
-    return [
-        Issue.from_graphql(node)
-        for page in pages
-        for node in page["repository"]["issues"]["nodes"]
-    ]
+    if cache is None:
+        return [Issue.from_graphql(n) for n in _fetch_nodes(repo)]
+
+    now = now_utc()
+    entry = cache.load(repo, now)
+    if entry is None:
+        nodes = {n["number"]: n for n in _fetch_nodes(repo)}
+        full_fetch_at = now
+    else:
+        nodes = dict(entry.nodes)
+        for node in _fetch_nodes(repo, since=entry.fetched_at):
+            if node["state"] == "OPEN":
+                nodes[node["number"]] = node
+            else:
+                nodes.pop(node["number"], None)
+        full_fetch_at = entry.full_fetch_at
+    cache.save(repo, CacheEntry(full_fetch_at, now, nodes))
+    return [Issue.from_graphql(n) for n in nodes.values()]
 
 
 def score_reasons(issue: Issue) -> list[tuple[int, str]]:

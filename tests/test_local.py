@@ -94,3 +94,16 @@ def test_git_error(tmp_path):
 def test_issue_in_branch_name(name, issue):
     m = local._ISSUE_IN_NAME_RE.search(name)
     assert (int(m.group(1)) if m else None) == issue
+
+
+def test_fetch_base(git_repo, tmp_path):
+    upstream = git_repo
+    upstream.commit("one", {"a.py": ""})
+    clone_path = tmp_path / "clone"
+    upstream.git("clone", "-q", "-o", "upstream", str(upstream.path), str(clone_path))
+    upstream.commit("two", {"b.py": ""})
+
+    assert local.base_commit(clone_path, "upstream/main").subject == "one"
+    local.fetch_base(clone_path, "upstream/main")
+    assert local.base_commit(clone_path, "upstream/main").subject == "two"
+    local.fetch_base(clone_path, "main")  # local branch: nothing to fetch
