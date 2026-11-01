@@ -48,9 +48,13 @@ class FixBranch:
 
     @property
     def files_to_test(self) -> tuple[str, ...]:
-        """Changed test files, or every changed file if none (e.g. doctests)."""
-        tests = tuple(f.path for f in self.files if _TEST_FILE_RE.search(f.path))
-        return tests or tuple(f.path for f in self.files)
+        return files_to_test(self.files)
+
+
+def files_to_test(files: tuple[FileChange, ...]) -> tuple[str, ...]:
+    """Changed test files, or every changed file if none (e.g. doctests)."""
+    tests = tuple(f.path for f in files if _TEST_FILE_RE.search(f.path))
+    return tests or tuple(f.path for f in files)
 
 
 def _git(path: Path, *args: str) -> str:
@@ -61,6 +65,11 @@ def _git(path: Path, *args: str) -> str:
         err = redact(proc.stderr.decode("utf-8", "replace").strip())
         raise LocalError(f"git {args[0]} in {path}: {err}")
     return proc.stdout.decode("utf-8", "replace")
+
+
+def git(path: Path, *args: str) -> str:
+    """Run ``git -C path args`` and return its output; LocalError on failure."""
+    return _git(path, *args)
 
 
 def _log(path: Path, *args: str) -> list[Commit]:
@@ -85,6 +94,22 @@ def fetch_base(path: Path, base: str) -> None:
     remote = base.split("/", 1)[0]
     if "/" in base and remote in _git(path, "remote").split():
         _git(path, "fetch", "--quiet", remote)
+
+
+def changed_files(path: Path, base: str, rev: str) -> tuple[FileChange, ...]:
+    """Files changed on ``rev`` since it left ``base``."""
+    files = []
+    numstat = _git(path, "diff", *_DIFF_OPTS, "--numstat", "-z", f"{base}...{rev}")
+    for record in filter(None, numstat.split("\0")):
+        added, deleted, file = record.split("\t", 2)
+        files.append(
+            FileChange(
+                file,
+                None if added == "-" else int(added),
+                None if deleted == "-" else int(deleted),
+            )
+        )
+    return tuple(files)
 
 
 def base_commit(path: Path, base: str) -> Commit:
@@ -113,19 +138,9 @@ def fix_branches(path: Path, base: str, patterns: tuple[str, ...]) -> list[FixBr
             issue = refs_[0]
         else:
             continue
-        files = []
-        numstat = _git(path, "diff", *_DIFF_OPTS, "--numstat", "-z", f"{base}...{name}")
-        for record in filter(None, numstat.split("\0")):
-            added, deleted, file = record.split("\t", 2)
-            files.append(
-                FileChange(
-                    file,
-                    None if added == "-" else int(added),
-                    None if deleted == "-" else int(deleted),
-                )
-            )
+        files = changed_files(path, base, name)
         diff = _git(path, "diff", *_DIFF_OPTS, f"{base}...{name}")
-        branches.append(FixBranch(name, issue, tuple(commits), tuple(files), diff))
+        branches.append(FixBranch(name, issue, tuple(commits), files, diff))
     return branches
 
 

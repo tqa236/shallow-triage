@@ -18,8 +18,10 @@ from pathlib import Path
 from shallow_triage import local, serialize
 from shallow_triage.cache import IssueCache
 from shallow_triage.config import RepoConfig
+from shallow_triage.findings import Finding, Findings
 from shallow_triage.issues import Issue, fetch_issues, rank, score_reasons
 from shallow_triage.local import Commit, FixBranch
+from shallow_triage.marks import Marks
 from shallow_triage.store import read_json, repo_path, write_private_json
 
 # Bump only for a change that old files can't follow by the rules above.
@@ -50,11 +52,13 @@ class Closable:
     issue: Issue
     commits: tuple[Commit, ...] = ()
     merged_prs: tuple[tuple[str, str], ...] = ()  # (url, merge date)
+    findings: tuple[Finding, ...] = ()  # verified: bisect or added by hand
 
     @property
     def latest(self) -> str:
         """Date of the newest piece of evidence."""
         dates = [c.date for c in self.commits] + [d for _, d in self.merged_prs]
+        dates += [f.recorded_at.date().isoformat() for f in self.findings]
         return max(dates, default="")
 
 
@@ -73,6 +77,10 @@ class RepoReport:
     base: str | None = None  # e.g. upstream/main; None without a local clone
     base_commit: Commit | None = None
     test: str | None = None  # test command template with {files}
+    build: str | None = None  # run after switching branches, if configured
+    uses_venv: bool = False  # whether commands run in a configured venv
+    # (issue number, marks.SAFE or marks.CHANGED) for issues marked safe
+    safe: tuple[tuple[int, str], ...] = ()
 
 
 def build_report(
@@ -84,12 +92,16 @@ def build_report(
     cache: IssueCache | None = None,
     fetch: bool = False,
     batch: int | None = 100,
+    findings: Findings | None = None,
+    marks: Marks | None = None,
 ) -> RepoReport:
     """Read the local clone, if configured, then bring the issues up to date.
 
     With ``fetch``, the clone's base remote is fetched first. ``batch`` is how
     many more open issues (and issues cited by fixing commits) to fetch.
+    ``findings`` and ``marks`` are the user's recorded findings and safe marks.
     """
+    verified = findings.items if findings else {}
     branches: list[FixBranch] = []
     commits: dict[int, list[Commit]] = {}
     base_commit = None
@@ -104,7 +116,7 @@ def build_report(
         config.name,
         cache,
         batch=batch,
-        wanted=tuple(b.issue for b in branches),
+        wanted=tuple(b.issue for b in branches) + tuple(verified),
         extra=tuple(commits),
     )
     by_number = {i.number: i for i in found.issues}
@@ -121,9 +133,13 @@ def build_report(
             for url, day in i.merged_prs
             if url.startswith(own_prs) and (not config.since or day >= config.since)
         )
-        if i.number in commits or merged:
-            closable.append(Closable(i, tuple(commits.get(i.number, ())), merged))
-    closable.sort(key=lambda c: c.latest, reverse=True)
+        found_here = (verified[i.number],) if i.number in verified else ()
+        if i.number in commits or merged or found_here:
+            closable.append(
+                Closable(i, tuple(commits.get(i.number, ())), merged, found_here)
+            )
+    # verified first, then by the newest evidence
+    closable.sort(key=lambda c: (bool(c.findings), c.latest), reverse=True)
     skip = {f.issue.number for f in fixes} | {c.issue.number for c in closable}
     ranked = rank(
         [i for i in found.issues if i.number not in skip],
@@ -135,6 +151,11 @@ def build_report(
         reasons = tuple(score_reasons(issue))
         candidates.append(Candidate(issue, sum(p for p, _ in reasons), reasons))
     local_clone = config.path is not None
+    safe = []
+    if marks:
+        for i in found.issues:
+            if (state := marks.state(i.number, i.title, i.body)) is not None:
+                safe.append((i.number, state))
     return RepoReport(
         repo=config.name,
         generated_at=generated_at,
@@ -147,6 +168,9 @@ def build_report(
         base=config.base if local_clone else None,
         base_commit=base_commit,
         test=config.test if local_clone else None,
+        build=config.build if local_clone else None,
+        uses_venv=local_clone and config.venv is not None,
+        safe=tuple(sorted(safe)),
     )
 
 
