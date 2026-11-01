@@ -1,3 +1,5 @@
+import pytest
+
 from shallow_triage import issues
 from shallow_triage.issues import Issue, rank, score_issue
 
@@ -6,13 +8,35 @@ def _issue(n, body="", labels=(), **kw):
     return Issue(n, f"t{n}", f"u{n}", body, frozenset(labels), **kw)
 
 
-def test_fetch_skips_pull_requests(monkeypatch):
-    raw = [
-        {"number": 1, "title": "a", "html_url": "u1", "body": None, "labels": []},
-        {"number": 2, "title": "b", "html_url": "u2", "pull_request": {}},
+def _node(n, prs=()):
+    return {
+        "number": n,
+        "title": f"t{n}",
+        "url": f"u{n}",
+        "body": None,
+        "comments": {"totalCount": 0},
+        "assignees": {"totalCount": 0},
+        "labels": {"nodes": [{"name": "Bug"}]},
+        "closedByPullRequestsReferences": {
+            "nodes": [{"url": url, "state": state} for url, state in prs]
+        },
+    }
+
+
+def test_fetch_parses_pages_and_open_linked_prs(monkeypatch):
+    pages = [
+        {"repository": {"issues": {"nodes": [_node(1, [("p10", "OPEN")])]}}},
+        {"repository": {"issues": {"nodes": [_node(2, [("p11", "MERGED")])]}}},
     ]
-    monkeypatch.setattr(issues.gh, "api", lambda *a, **k: raw)
-    assert [i.number for i in issues.fetch_open_issues("o/r")] == [1]
+    monkeypatch.setattr(issues.gh, "graphql", lambda *a, **k: pages)
+    got = issues.fetch_open_issues("o/r")
+    assert [(i.number, i.linked_prs) for i in got] == [(1, ("p10",)), (2, ())]
+    assert got[0].labels == {"bug"}
+
+
+def test_fetch_rejects_bad_repo():
+    with pytest.raises(ValueError):
+        issues.fetch_open_issues("not-a-repo")
 
 
 def test_score_prefers_reproducible_bugs():
@@ -24,3 +48,9 @@ def test_score_prefers_reproducible_bugs():
 def test_rank_orders_and_limits():
     a, b, c = _issue(1), _issue(2, labels={"bug"}), _issue(3, assigned=True)
     assert rank([a, b, c], limit=2) == [b, a]
+
+
+def test_rank_drops_linked_unless_asked():
+    free, taken = _issue(1), _issue(2, labels={"bug"}, linked_prs=("p5",))
+    assert rank([free, taken]) == [free]
+    assert rank([free, taken], include_linked=True) == [taken, free]

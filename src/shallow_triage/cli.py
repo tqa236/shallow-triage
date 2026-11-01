@@ -14,15 +14,27 @@ def main(argv: list[str] | None = None) -> int:
     cand = sub.add_parser("candidates", help="list the most triageable open issues")
     cand.add_argument("repo", help="owner/name")
     cand.add_argument("-n", "--limit", type=int, default=10)
+    cand.add_argument(
+        "--include-linked",
+        action="store_true",
+        help="keep issues that already have an open linked PR",
+    )
     args = parser.parse_args(argv)
 
     try:
-        issues = rank(fetch_open_issues(args.repo), args.limit)
-    except gh.GhError as exc:
+        issues = fetch_open_issues(args.repo)
+    except (gh.GhError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    issues = rank(issues, args.limit, include_linked=args.include_linked)
     out = [
-        {"number": i.number, "title": i.title, "url": i.url, "score": score_issue(i)}
+        {
+            "number": i.number,
+            "title": i.title,
+            "url": i.url,
+            "score": score_issue(i),
+            "linked_prs": list(i.linked_prs),
+        }
         for i in issues
     ]
     json.dump(out, sys.stdout, indent=2)
