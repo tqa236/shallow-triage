@@ -52,3 +52,7 @@ select = ["B", "C4", "E", "F", "I", "T10", "W", "UP"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "pep257"
+
+[tool.repo-review]
+# Not needed yet: docs, task runner, type checker, extra pre-commit hooks.
+ignore = ["PY004", "PY007", "GH212", "MY", "PC100", "PC140", "PC160", "PC170", "PC180", "PC901", "PC902", "PC903"]
