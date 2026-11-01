@@ -107,9 +107,13 @@ a site are processed in parallel.
 ## Sharing the pages
 
 The pages are static HTML with no scripts and a Content-Security-Policy that
-blocks any. They do contain absolute paths of your local clones and the diffs
-of unpushed branches. Check that before publishing a site, and don't publish
-pages built from private repositories.
+blocks any. They never show where your local clones are: commands are meant
+to be run from inside the clone, and your home folder is shown as `~`
+wherever it appears, for example in a `test` command.
+
+They do show branch names, commit messages and diffs of unpushed branches.
+Check those before publishing a site, and don't publish pages built from
+private repositories.
 
 ## Working with an agent
 

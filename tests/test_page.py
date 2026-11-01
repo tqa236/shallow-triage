@@ -1,10 +1,12 @@
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
 from shallow_triage.config import RepoConfig
 from shallow_triage.issues import Issue
 from shallow_triage.local import Commit, FileChange, FixBranch
-from shallow_triage.page import excerpt, render_page
+from shallow_triage.page import _hide_home, excerpt, render_page
 from shallow_triage.report import Closable, FixEntry, RepoReport
 
 NOW = datetime(2026, 11, 1, tzinfo=UTC)
@@ -65,11 +67,12 @@ def test_render_page_fixes_and_closable():
     assert "Fix &lt;x&gt;" in html and "Fixes #7" in html
     assert '<span class="add">+new &lt;b&gt;</span>' in html
     assert '<span class="del">-old</span>' in html
-    assert "cd &#x27;/src/my r&#x27;" in html
+    assert "# in your clone of o/r" in html
+    assert "/src/my r" not in html  # the clone's location is never shown
     assert "git diff upstream/main...triage/issue-7" in html
     assert "git switch triage/issue-7 &amp;&amp; bin/test tests/test_m.py" in html
     assert "https://github.com/o/r/commit/1234567890ab" in html
-    assert "upstream/main</code> @ <code>feedbeef00" in html
+    assert "Compared with <code>upstream/main</code> @ <code>feedbeef00" in html
     assert "no longer open (1)" in html and "https://github.com/o/r/issues/9" in html
     assert "$" not in html  # every template placeholder was filled
 
@@ -115,3 +118,39 @@ def test_unsafe_urls_are_not_linked():
     assert 'href="javascript:' not in html and 'href="data:' not in html
     assert '<span class="title">#1 t</span>' in html  # shown, but not a link
     assert "default-src 'none'" in html  # CSP blocks scripts in any case
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("source /home/me/venv/bin/activate", "source ~/venv/bin/activate"),
+        ("cd /home/me", "cd ~"),
+        ("&#x27;/home/me&#x27;", "&#x27;~&#x27;"),
+        ("/home/me2/x and /home/meow", "/home/me2/x and /home/meow"),  # other users
+    ],
+)
+def test_hide_home(text, expected):
+    assert _hide_home(text, home="/home/me") == expected
+    assert _hide_home(text, home="/") == text
+
+
+def test_page_never_shows_home_or_clone_path(monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: Path("/home/me"))
+    cfg = RepoConfig(
+        "o/r",
+        path=Path("/home/me/src/r"),
+        base="main",
+        test="/home/me/venv/bin/python -m pytest {files}",
+    )
+    branch = FixBranch(
+        "triage/issue-1",
+        1,
+        (Commit("abc", "2026-01-01", "fix", "Tried /home/me/scratch/repro.py"),),
+        (FileChange("tests/test_x.py", 1, 0),),
+        "+see /home/me/notes\n",
+    )
+    issue = Issue(1, "t", "https://github.com/o/r/issues/1", "")
+    rep = RepoReport(cfg, 1, [], [FixEntry(branch, issue)], base=Commit("b", "d", "s"))
+    html = render_page(rep, generated_at=NOW)
+    assert "/home/me" not in html
+    assert "~/venv/bin/python -m pytest tests/test_x.py" in html

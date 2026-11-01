@@ -2,6 +2,9 @@
 
 The markup and styles live in ``templates/``; this module prepares the
 values. Every value is HTML-escaped here before it is put in a template.
+
+Pages may be shared, so they never show where the local clones are, and the
+user's home folder is replaced by ``~`` wherever it appears in the text.
 """
 
 import re
@@ -11,6 +14,7 @@ from datetime import datetime
 from functools import cache
 from html import escape
 from importlib.resources import files
+from pathlib import Path
 from string import Template
 
 from shallow_triage.issues import Issue, score_issue, score_reasons
@@ -111,7 +115,7 @@ def _commands(report: RepoReport, branch: FixBranch) -> str:
     test = cfg.test.replace("{files}", files)
     name = shlex.quote(branch.name)
     cmds = [
-        f"cd {shlex.quote(str(cfg.path))}",
+        f"# in your clone of {cfg.name}",
         f"git diff {shlex.quote(f'{cfg.base}...{branch.name}')}",
         f"git switch {name} && {test}",
     ]
@@ -217,9 +221,19 @@ def _toc_html(report: RepoReport) -> str:
     return _render("toc.html", items=items) if items else ""
 
 
+def _hide_home(text: str, home: str | None = None) -> str:
+    """Replace the user's home folder (e.g. in a test command) with ``~``."""
+    home = (home or str(Path.home())).rstrip("/")
+    if len(home) < 2:  # "/" as home: nothing meaningful to hide
+        return text
+    return re.sub(re.escape(home) + r"(?=/|\b|$)", "~", text)
+
+
 def _document(title: str, body: str) -> str:
-    return _render(
-        "base.html", title=escape(title), style=_template("style.css"), body=body
+    return _hide_home(
+        _render(
+            "base.html", title=escape(title), style=_template("style.css"), body=body
+        )
     )
 
 
@@ -238,8 +252,7 @@ def render_page(
     facts = ""
     if report.base is not None:
         facts = (
-            f'<p class="note">Local clone <code>{escape(str(report.config.path))}</code>'
-            f" · base <code>{escape(report.config.base)}</code> @ "
+            f'<p class="note">Compared with <code>{escape(report.config.base)}</code> @ '
             f"<code>{escape(report.base.sha[:10])}</code> ({escape(report.base.date)})"
             "</p>"
         )
