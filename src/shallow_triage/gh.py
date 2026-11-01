@@ -12,6 +12,8 @@ import subprocess
 from typing import Any
 
 _TOKEN_RE = re.compile(r"\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b")
+# user:password@ (or token@) in a URL, e.g. a remote URL in a git error
+_URL_USERINFO_RE = re.compile(r"(\b[a-z][a-z0-9+.-]*://)[^/@\s]+@", re.I)
 
 
 class GhError(RuntimeError):
@@ -19,8 +21,8 @@ class GhError(RuntimeError):
 
 
 def redact(text: str) -> str:
-    """Replace anything that looks like a GitHub token with a placeholder."""
-    return _TOKEN_RE.sub("[REDACTED]", text)
+    """Replace anything that looks like a token or URL credentials."""
+    return _TOKEN_RE.sub("[REDACTED]", _URL_USERINFO_RE.sub(r"\1[REDACTED]@", text))
 
 
 def _run(cmd: list[str]) -> Any:

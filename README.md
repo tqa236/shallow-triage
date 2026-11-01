@@ -100,8 +100,16 @@ than `--max-age` hours.
 | `--no-cache` | Don't read or write the cache |
 | `--cache-dir DIR` | Keep the cache somewhere else |
 
-The cache holds public issue data only. Repositories in a site are processed
-in parallel.
+No token is stored. For a private repository the cache holds its private
+issue content, so its files are readable by your user only. Repositories in
+a site are processed in parallel.
+
+## Sharing the pages
+
+The pages are static HTML with no scripts and a Content-Security-Policy that
+blocks any. They do contain absolute paths of your local clones and the diffs
+of unpushed branches. Check that before publishing a site, and don't publish
+pages built from private repositories.
 
 ## Working with an agent
 

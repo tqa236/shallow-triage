@@ -89,3 +89,29 @@ def test_render_index_links_counts_to_sections():
     assert 'href="o/r.html#ready">2</a>' in html
     assert 'href="o/r.html#candidates">5</a>' in html
     assert "#closable" not in html  # zero is not a link
+
+
+def test_commands_quote_branch_names():
+    cfg = RepoConfig("o/r", path=Path("/src/r"), base="main")
+    branch = FixBranch(
+        "triage/issue-1-;id>pwned",
+        1,
+        (Commit("abc", "2026-01-01", "fix"),),
+        (FileChange("tests/test_x.py", 1, 0),),
+        "",
+    )
+    issue = Issue(1, "t", "https://github.com/o/r/issues/1", "")
+    html = render_page(
+        RepoReport(cfg, 1, [], [FixEntry(branch, issue)]), generated_at=NOW
+    )
+    cmds = html.split("<h3>Commands</h3>")[1].split("</pre>")[0]
+    assert "git diff &#x27;main...triage/issue-1-;id&gt;pwned&#x27;" in cmds
+    assert "git switch &#x27;triage/issue-1-;id&gt;pwned&#x27; &amp;&amp;" in cmds
+
+
+def test_unsafe_urls_are_not_linked():
+    issue = Issue(1, "t", "javascript:alert(1)", "", linked_prs=("data:text/html,x",))
+    html = render_page(RepoReport(RepoConfig("o/r"), 1, [issue]), generated_at=NOW)
+    assert 'href="javascript:' not in html and 'href="data:' not in html
+    assert '<span class="title">#1 t</span>' in html  # shown, but not a link
+    assert "default-src 'none'" in html  # CSP blocks scripts in any case

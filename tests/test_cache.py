@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -14,7 +15,7 @@ def _node(n, state="OPEN", title=None):
         "number": n,
         "state": state,
         "title": title or f"t{n}",
-        "url": f"u{n}",
+        "url": f"https://github.com/o/r/issues/{n}",
         "body": "",
         "comments": {"totalCount": 0},
         "assignees": {"totalCount": 0},
@@ -128,3 +129,34 @@ def test_since_query_is_sent_with_skew(monkeypatch):
 def test_default_cache_dir(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
     assert cache_mod.default_cache_dir() == tmp_path / "shallow-triage"
+
+
+def test_cache_files_are_owner_only(tmp_path, github, clock):
+    github.full = [_node(1)]
+    issues.fetch_open_issues("o/r", IssueCache(tmp_path / "c"))
+    path = tmp_path / "c" / "o" / "r.json"
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert path.parent.stat().st_mode & 0o777 == 0o700
+    assert [p.name for p in path.parent.iterdir()] == ["r.json"]  # no temp left
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"number": '1"><b>x</b>'},
+        {"url": "javascript:alert(1)"},
+        {"url": "https://evil.example/"},
+    ],
+)
+def test_tampered_cache_entry_is_refetched(tmp_path, github, clock, bad):
+    c = IssueCache(tmp_path)
+    github.full = [_node(1)]
+    issues.fetch_open_issues("o/r", c)
+    path = tmp_path / "o" / "r.json"
+    data = json.loads(path.read_text())
+    data["nodes"][0].update(bad)
+    path.write_text(json.dumps(data))
+
+    got = issues.fetch_open_issues("o/r", c)
+    assert github.calls == [None, None]  # full fetch, not an incremental one
+    assert [i.url for i in got] == ["https://github.com/o/r/issues/1"]

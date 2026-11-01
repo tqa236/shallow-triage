@@ -107,3 +107,29 @@ def test_fetch_base(git_repo, tmp_path):
     local.fetch_base(clone_path, "upstream/main")
     assert local.base_commit(clone_path, "upstream/main").subject == "two"
     local.fetch_base(clone_path, "main")  # local branch: nothing to fetch
+
+
+def test_git_errors_are_redacted(git_repo, monkeypatch):
+    def fail(*args, **kwargs):
+        import subprocess
+
+        return subprocess.CompletedProcess(
+            args, 128, b"", b"fatal: 'https://me:ghp_" + b"a" * 36 + b"@x/r' failed"
+        )
+
+    monkeypatch.setattr(local.subprocess, "run", fail)
+    with pytest.raises(local.LocalError) as exc:
+        local.base_commit(git_repo.path, "main")
+    assert "ghp_" not in str(exc.value) and "me:" not in str(exc.value)
+
+
+def test_unusual_file_names_and_user_git_config(git_repo):
+    r = git_repo
+    r.commit("init", {"old name.py": "x\n"})
+    r.git("config", "color.ui", "always")
+    r.git("switch", "-q", "-c", "triage/issue-5")
+    r.git("mv", "old name.py", 'new "name".py')
+    r.commit("rename", {'new "name".py': "y\n"})
+    (b,) = local.fix_branches(r.path, "main", ("triage/issue-*",))
+    assert {f.path for f in b.files} == {"old name.py", 'new "name".py'}
+    assert "\x1b[" not in b.diff  # no color codes despite color.ui=always
