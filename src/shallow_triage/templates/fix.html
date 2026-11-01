@@ -1,0 +1,15 @@
+<li class="card" id="issue-$number">
+  <div class="head">$title</div>
+  <p class="sub">
+    <code>$branch</code> @ <code>$sha</code> · $date
+    · <span class="plus">+$added</span> <span class="minus">−$deleted</span> in $file_count
+  </p>
+  $linked_prs
+  <h3>Suggested fix</h3>
+  $commits
+  <h3>Files</h3>
+  <ul class="files">$files</ul>
+  <details><summary>Show diff</summary>$diff</details>
+  <h3>Commands</h3>
+  <pre>$commands</pre>
+</li>

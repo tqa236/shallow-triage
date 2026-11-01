@@ -50,12 +50,13 @@ def test_render_page_fixes_and_closable():
         Issue(8, "done", "https://github.com/o/r/issues/8", ""),
         (Commit("1234567890ab", "2026-10-01", "BUG: done"),),
     )
+    gone = FixBranch("fix-9-old", 9, branch.commits, (), "")
     rep = RepoReport(
         cfg,
         2,
         [],
         [FixEntry(branch, issue)],
-        [],
+        [gone],
         [closable],
         Commit("feedbeef00", "2026-11-01", "base"),
     )
@@ -69,3 +70,5 @@ def test_render_page_fixes_and_closable():
     assert "git switch triage/issue-7 &amp;&amp; bin/test tests/test_m.py" in html
     assert "https://github.com/o/r/commit/1234567890ab" in html
     assert "upstream/main</code> @ <code>feedbeef00" in html
+    assert "no longer open (1)" in html and "https://github.com/o/r/issues/9" in html
+    assert "$" not in html  # every template placeholder was filled
