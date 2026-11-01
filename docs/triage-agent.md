@@ -64,8 +64,11 @@ instructions.
    | `score` | int | Higher means more objective and fixable |
    | `linked_prs` | list[str] | URLs of open PRs linked to the issue |
 
-   Issues with an open linked PR are already left out (pass
-   `--include-linked` to keep them). The score is a rough heuristic, so read
+   Candidates come from the open issues fetched so far: each run adds
+   `--batch` more (default 100), newest first, and the cache remembers them.
+   Run again, or pass a larger `--batch`, to reach older issues. Issues with
+   an open linked PR are already left out (pass `--include-linked` to keep
+   them). The score is a rough heuristic, so read
    each issue before choosing it:
 
    ```sh

@@ -11,6 +11,7 @@ def _issue(n, body="", labels=(), **kw):
 def _node(n, prs=()):
     return {
         "number": n,
+        "state": "OPEN",
         "title": f"t{n}",
         "url": f"u{n}",
         "body": None,
@@ -26,12 +27,10 @@ def _node(n, prs=()):
     }
 
 
-def test_fetch_parses_pages_and_open_linked_prs(monkeypatch):
-    pages = [
-        {"repository": {"issues": {"nodes": [_node(1, [("p10", "OPEN")])]}}},
-        {"repository": {"issues": {"nodes": [_node(2, [("p11", "MERGED")])]}}},
-    ]
-    monkeypatch.setattr(issues.gh, "graphql", lambda *a, **k: pages)
+def test_fetch_parses_nodes_and_linked_prs(monkeypatch):
+    nodes = [_node(1, [("p10", "OPEN")]), _node(2, [("p11", "MERGED")])]
+    monkeypatch.setattr(issues, "_walk", lambda *a: (nodes, None, True))
+    monkeypatch.setattr(issues, "_open_total", lambda *a: 2)
     got = issues.fetch_open_issues("o/r")
     assert [(i.number, i.linked_prs) for i in got] == [(1, ("p10",)), (2, ())]
     assert [i.merged_prs for i in got] == [(), (("p11", "2026-01-02"),)]

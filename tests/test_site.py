@@ -2,22 +2,23 @@ from datetime import UTC, datetime
 
 from shallow_triage import gh, report, site
 from shallow_triage.config import RepoConfig
-from shallow_triage.issues import Issue
+from shallow_triage.issues import Issue, IssueSet
 
 NOW = datetime(2026, 11, 1, tzinfo=UTC)
 
 
-def _fake_fetch(repo, cache=None):
+def _fake_fetch(repo, cache=None, **kw):
     if repo == "o/broken":
         raise gh.GhError("not found")
-    return [
+    found = [
         Issue(1, "a", "u1", "Traceback", frozenset({"bug"})),
         Issue(2, "b", "u2", "", linked_prs=("p",)),
     ]
+    return IssueSet(found, total_open=2, complete=True)
 
 
 def test_build_site_writes_index_and_pages(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(report, "fetch_open_issues", _fake_fetch)
+    monkeypatch.setattr(report, "fetch_issues", _fake_fetch)
     repos = [RepoConfig(n) for n in ["o/one", "o/broken", "x/two", "o/one"]]
     failed = site.build_site(
         repos, tmp_path, limit=10, include_linked=False, generated_at=NOW
@@ -36,7 +37,7 @@ def test_build_site_writes_index_and_pages(tmp_path, monkeypatch, capsys):
 
 
 def test_build_site_reports_bad_clone(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(report, "fetch_open_issues", _fake_fetch)
+    monkeypatch.setattr(report, "fetch_issues", _fake_fetch)
     repos = [RepoConfig("o/one", path=tmp_path / "missing")]
     failed = site.build_site(
         repos, tmp_path / "out", limit=10, include_linked=False, generated_at=NOW

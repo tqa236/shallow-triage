@@ -84,20 +84,32 @@ shallow-triage site --config triage.toml --fetch -o site/
   linked to close the issue. Check that the issue no longer reproduces before
   closing it.
 
-## Caching
+## Fetching and caching
 
-Fetching every open issue of a large repository takes a minute or two, so
-fetched issues are cached in `~/.cache/shallow-triage` (or
-`$XDG_CACHE_HOME/shallow-triage`). A later run asks GitHub only for issues
-updated since the previous run, including ones that closed, so it stays
-current in seconds. Everything is refetched once the last full fetch is older
-than `--max-age` hours.
+Nobody reads a whole backlog at once, so issues are fetched a batch at a
+time and cached in `~/.cache/shallow-triage` (or
+`$XDG_CACHE_HOME/shallow-triage`). Each run:
+
+1. **Updates what is cached**: asks GitHub only for issues changed since the
+   previous run. Closed issues are dropped, edited ones refreshed, and
+   recently active ones added even if the batches haven't reached them.
+2. **Adds a batch**: fetches the next `--batch` open issues, newest first,
+   continuing where the previous run stopped.
+3. **Looks up specific issues**: the issues of local fix branches, and up to
+   `--batch` issues cited by "Fixes #N" commits whose state isn't known yet.
+   Numbers found to be closed are remembered, so they are never asked again.
+
+A run takes seconds, even for repositories with thousands of open issues.
+Pages say how much of the backlog has been fetched so far, for example
+"2576 open issues, 307 fetched so far"; candidates and closable issues are
+picked from those.
 
 | Option | Effect |
 | --- | --- |
-| `--max-age HOURS` | Refetch everything after this long (default 24) |
-| `--refresh` | Refetch everything now and update the cache |
-| `--no-cache` | Don't read or write the cache |
+| `--batch N` | Fetch N more open issues per run (default 100) |
+| `--all` | Fetch every open issue not cached yet |
+| `--refresh` | Discard the cache and start over |
+| `--no-cache` | Don't read or write the cache; each run starts from scratch |
 | `--cache-dir DIR` | Keep the cache somewhere else |
 
 No token is stored. For a private repository the cache holds its private

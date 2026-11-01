@@ -25,6 +25,7 @@ def build_site(
     generated_at: datetime,
     cache: IssueCache | None = None,
     fetch: bool = False,
+    batch: int | None = 100,
 ) -> list[str]:
     """Write ``index.html`` and ``<owner>/<name>.html`` under ``out_dir``.
 
@@ -45,6 +46,7 @@ def build_site(
                 include_linked=include_linked,
                 cache=cache,
                 fetch=fetch,
+                batch=batch,
             )
         except (gh.GhError, LocalError, ValueError) as exc:
             return exc

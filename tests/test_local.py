@@ -61,12 +61,12 @@ def test_fix_branches(repo):
 
 
 def test_closing_commits(repo):
-    found = local.closing_commits(repo.path, "main", {12, 78, 90, 91, 92})
-    assert set(found) == {78, 90, 91}
+    found = local.closing_commits(repo.path, "main")
+    assert list(found) == [91, 90, 78]  # history order; "see #92" isn't one
     assert found[78][0].subject == "BUG: thing"
 
-    recent = local.closing_commits(repo.path, "main", {78, 90, 91}, since="2020-01-01")
-    assert set(recent) == {78, 91}
+    recent = local.closing_commits(repo.path, "main", since="2020-01-01")
+    assert list(recent) == [91, 78]
 
 
 def test_closing_refs():

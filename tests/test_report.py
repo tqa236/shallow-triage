@@ -1,6 +1,6 @@
 from shallow_triage import report
 from shallow_triage.config import RepoConfig
-from shallow_triage.issues import Issue
+from shallow_triage.issues import Issue, IssueSet
 
 PR = "https://github.com/o/r/pull/1"
 FORK_PR = "https://github.com/someone/r/pull/1"
@@ -24,7 +24,13 @@ def test_build_report_splits_issues(git_repo, monkeypatch):
         Issue(5, "old merged pr", "u5", "", merged_prs=((PR, "2019-05-01"),)),
         Issue(6, "fork pr", "u6", "", merged_prs=((FORK_PR, "2026-05-01"),)),
     ]
-    monkeypatch.setattr(report, "fetch_open_issues", lambda name, cache=None: issues)
+    asked = {}
+
+    def fake_fetch(name, cache=None, *, batch, wanted, extra):
+        asked.update(batch=batch, wanted=wanted, extra=extra)
+        return IssueSet(issues, total_open=40, complete=False)
+
+    monkeypatch.setattr(report, "fetch_issues", fake_fetch)
     rep = report.build_report(
         RepoConfig("o/r", path=r.path, base="main", since="2020-01-01"),
         limit=None,
@@ -38,11 +44,17 @@ def test_build_report_splits_issues(git_repo, monkeypatch):
     ]
     assert [i.number for i in rep.candidates] == [2, 5, 6]  # old PR, fork PR
     assert rep.base.subject == "Closes #3"
+    # the clone tells which issues to look up: fix branches and fixing commits
+    assert (asked["batch"], set(asked["wanted"]), asked["extra"]) == (100, {1, 9}, (3,))
+    assert (rep.total_open, rep.known_open) == (40, 6)
 
 
 def test_build_report_without_clone(monkeypatch):
     monkeypatch.setattr(
-        report, "fetch_open_issues", lambda name, cache=None: [Issue(5, "t", "u", "")]
+        report,
+        "fetch_issues",
+        lambda name, cache=None, **kw: IssueSet([Issue(5, "t", "u", "")], 1, True),
     )
     rep = report.build_report(RepoConfig("o/r"), limit=None, include_linked=False)
     assert rep.base is None and rep.fixes == [] and len(rep.candidates) == 1
+    assert rep.known_open is None  # everything fetched
