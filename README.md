@@ -209,6 +209,14 @@ point the agent to that file.
 See [docs/architecture.md](docs/architecture.md) before changing a stored
 format: the config, the cache and saved reports must stay readable.
 
+To use the `shallow-triage` command from a working copy, install it as an
+editable tool once. It then runs the current code from anywhere, whatever
+virtualenv is active:
+
+```sh
+uv tool install -e .
+```
+
 ```sh
 uv sync
 uv run pytest
