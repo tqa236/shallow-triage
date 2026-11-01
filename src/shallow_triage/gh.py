@@ -56,3 +56,35 @@ def graphql(query: str, **variables: str) -> list[dict]:
     for key, value in variables.items():
         cmd += ["-f", f"{key}={value}"]
     return [page["data"] for page in _run(cmd)]
+
+
+def graphql_once(
+    query: str, *, allow_not_found: bool = False, **variables: str | int | None
+) -> dict:
+    """Run one GraphQL query and return its ``data``.
+
+    Ints are sent as numbers, None values are left out. With
+    ``allow_not_found``, lookups of numbers that don't exist come back as
+    null instead of failing the whole query.
+    """
+    if shutil.which("gh") is None:
+        raise GhError("GitHub CLI 'gh' not found on PATH")
+    cmd = ["gh", "api", "graphql", "-f", f"query={query}"]
+    for key, value in variables.items():
+        if isinstance(value, int):
+            cmd += ["-F", f"{key}={value}"]  # -F: typed; only ever an int here
+        elif value is not None:
+            cmd += ["-f", f"{key}={value}"]
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    try:
+        out = json.loads(proc.stdout)
+    except ValueError:
+        out = {}
+    errors = out.get("errors") or []
+    if proc.returncode == 0 or (
+        allow_not_found
+        and out.get("data")
+        and all(e.get("type") == "NOT_FOUND" for e in errors)
+    ):
+        return out["data"]
+    raise GhError(redact(proc.stderr.strip() or f"gh exited {proc.returncode}"))

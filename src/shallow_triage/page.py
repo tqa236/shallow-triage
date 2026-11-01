@@ -278,7 +278,10 @@ def render_page(
             [_candidate_html(i) for i in report.candidates],
         ),
     ]
-    meta = f"{report.total_open} open issues · generated {_when(generated_at)}"
+    coverage = f"{report.total_open} open issues"
+    if report.known_open is not None:
+        coverage += f", {report.known_open} fetched so far"
+    meta = f"{coverage} · generated {_when(generated_at)}"
     body = _render(
         "repo.html",
         back=back,

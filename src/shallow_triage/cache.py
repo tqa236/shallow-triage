@@ -1,21 +1,22 @@
-"""On-disk cache of each repository's open issues.
+"""On-disk cache of each repository's issues, filled a batch at a time.
 
-The cache stores the raw GraphQL issue nodes. A run with a fresh enough cache
-only asks GitHub for issues updated since the previous run (open or closed),
-then adds, updates or drops them, so a large backlog is fetched in full only
-once per ``max_age``. No token is stored, but entries for a private
+For each repository it keeps the open issues fetched so far (raw GraphQL
+nodes), where the walk through the open issues stopped, and the numbers
+known not to be open issues. Each run continues from there instead of
+fetching the whole backlog. No token is stored, but entries for a private
 repository hold its private issue content, so files are owner-only.
 """
 
 import json
 import os
 import tempfile
-from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 
-# Bump when the issue query's fields change, so old entries are refetched.
-CACHE_VERSION = 1
+# Bump when the stored format or the issue fields change; older entries are
+# then ignored and rebuilt.
+CACHE_VERSION = 2
 
 
 def default_cache_dir() -> Path:
@@ -25,23 +26,24 @@ def default_cache_dir() -> Path:
 
 @dataclass(frozen=True)
 class CacheEntry:
-    full_fetch_at: datetime  # last time every open issue was fetched
-    fetched_at: datetime  # last time the entry was brought up to date
-    nodes: dict[int, dict]  # issue number -> GraphQL node
+    fetched_at: datetime | None = None  # last run; None before the first
+    cursor: str | None = None  # where the walk through open issues stopped
+    complete: bool = False  # the walk reached the end
+    nodes: dict[int, dict] = field(default_factory=dict)  # open issues
+    closed: frozenset[int] = frozenset()  # numbers known not to be open issues
 
 
 @dataclass(frozen=True)
 class IssueCache:
     directory: Path
-    max_age: timedelta = timedelta(hours=24)  # between full fetches
-    refresh: bool = False  # ignore what is cached and fetch everything
+    refresh: bool = False  # ignore what is cached and start over
 
     def _path(self, repo: str) -> Path:
         owner, name = repo.split("/")
         return self.directory / owner / f"{name}.json"
 
-    def load(self, repo: str, now: datetime) -> CacheEntry | None:
-        """The cached entry, or None if missing, unreadable, stale or refreshing."""
+    def load(self, repo: str) -> CacheEntry | None:
+        """The cached entry, or None if missing, unreadable or refreshing."""
         if self.refresh:
             return None
         try:
@@ -49,15 +51,19 @@ class IssueCache:
             if data["version"] != CACHE_VERSION:
                 return None
             entry = CacheEntry(
-                datetime.fromisoformat(data["full_fetch_at"]),
                 datetime.fromisoformat(data["fetched_at"]),
+                data["cursor"],
+                bool(data["complete"]),
                 {node["number"]: node for node in data["nodes"]},
+                frozenset(data["closed"]),
             )
         except (OSError, ValueError, KeyError, TypeError):
             return None
         if not all(_well_formed(node) for node in entry.nodes.values()):
-            return None  # edited or corrupted: refetch rather than trust it
-        if now - entry.full_fetch_at > self.max_age:
+            return None  # edited or corrupted: start over rather than trust it
+        if not all(type(n) is int for n in entry.closed):
+            return None
+        if entry.cursor is not None and not isinstance(entry.cursor, str):
             return None
         return entry
 
@@ -68,9 +74,11 @@ class IssueCache:
         path.parent.chmod(0o700)  # also tightens folders from older versions
         data = {
             "version": CACHE_VERSION,
-            "full_fetch_at": entry.full_fetch_at.isoformat(),
-            "fetched_at": entry.fetched_at.isoformat(),
+            "fetched_at": entry.fetched_at.isoformat() if entry.fetched_at else None,
+            "cursor": entry.cursor,
+            "complete": entry.complete,
             "nodes": list(entry.nodes.values()),
+            "closed": sorted(entry.closed),
         }
         # mkstemp: a new owner-only (0600) file with an unpredictable name;
         # the rename is atomic, so an interrupted run leaves the old entry

@@ -10,13 +10,13 @@ and fixing commits from local clones (see :mod:`shallow_triage.config`).
 import argparse
 import json
 import sys
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 
 from shallow_triage import gh
 from shallow_triage.cache import IssueCache, default_cache_dir
 from shallow_triage.config import RepoConfig, load_config
-from shallow_triage.issues import fetch_open_issues, rank, score_issue
+from shallow_triage.issues import fetch_issues, rank, score_issue
 from shallow_triage.page import render_page
 from shallow_triage.report import build_report
 from shallow_triage.site import build_site
@@ -29,32 +29,42 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="keep issues that already have an open linked PR",
     )
-    cache = parser.add_argument_group("cache")
-    cache.add_argument(
+    fetching = parser.add_argument_group("fetching and cache")
+    size = fetching.add_mutually_exclusive_group()
+    size.add_argument(
+        "--batch",
+        type=int,
+        default=100,
+        metavar="N",
+        help="fetch N more open issues this run, newest first (default: 100)",
+    )
+    size.add_argument(
+        "--all", action="store_true", help="fetch every open issue not cached yet"
+    )
+    fetching.add_argument(
         "--cache-dir",
         type=Path,
         default=default_cache_dir(),
         help="where fetched issues are kept (default: %(default)s)",
     )
-    cache.add_argument(
-        "--no-cache", action="store_true", help="always fetch everything"
+    fetching.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="don't read or write the cache; each run starts from scratch",
     )
-    cache.add_argument(
-        "--refresh", action="store_true", help="refetch everything and update the cache"
-    )
-    cache.add_argument(
-        "--max-age",
-        type=float,
-        default=24,
-        metavar="HOURS",
-        help="refetch everything when the last full fetch is older (default: 24)",
+    fetching.add_argument(
+        "--refresh", action="store_true", help="discard the cache and start over"
     )
 
 
 def _cache(args: argparse.Namespace) -> IssueCache | None:
     if args.no_cache:
         return None
-    return IssueCache(args.cache_dir, timedelta(hours=args.max_age), args.refresh)
+    return IssueCache(args.cache_dir, args.refresh)
+
+
+def _batch(args: argparse.Namespace) -> int | None:
+    return None if args.all else args.batch
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -101,6 +111,7 @@ def main(argv: list[str] | None = None) -> int:
             generated_at=datetime.now(UTC),
             cache=_cache(args),
             fetch=args.fetch,
+            batch=_batch(args),
         )
         return 1 if failed else 0
 
@@ -111,6 +122,7 @@ def main(argv: list[str] | None = None) -> int:
                 limit=args.limit,
                 include_linked=args.include_linked,
                 cache=_cache(args),
+                batch=_batch(args),
             )
         except (gh.GhError, ValueError) as exc:
             print(f"error: {exc}", file=sys.stderr)
@@ -123,7 +135,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     try:
-        issues = fetch_open_issues(args.repo, _cache(args))
+        issues = fetch_issues(args.repo, _cache(args), batch=_batch(args)).issues
     except (gh.GhError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

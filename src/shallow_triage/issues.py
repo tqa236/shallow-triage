@@ -16,34 +16,58 @@ _BAD_LABELS = {"question", "discussion", "needs-design", "wontfix", "duplicate"}
 # GitHub owner and repo names; also keeps them safe to use as file paths.
 _REPO_RE = re.compile(r"[A-Za-z0-9-]+/(?!\.\.?\Z)[A-Za-z0-9._-]+")
 
-# Without $since: every open issue. With $since: every issue (open or closed)
-# updated since then, which is enough to bring a cached copy up to date.
-_ISSUES_QUERY = """
-query($owner: String!, $name: String!, $endCursor: String%(since_var)s) {
+_FIELDS = """
+fragment IssueFields on Issue {
+  number state title url body
+  comments { totalCount }
+  assignees(first: 1) { totalCount }
+  labels(first: 20) { nodes { name } }
+  closedByPullRequestsReferences(first: 10, includeClosedPrs: true) {
+    nodes { url state mergedAt }
+  }
+}
+"""
+# The next page of open issues, newest first. Creation order doesn't change
+# between runs, so a saved cursor continues where the last run stopped.
+_WALK_QUERY = (
+    """
+query($owner: String!, $name: String!, $first: Int!, $after: String) {
   repository(owner: $owner, name: $name) {
-    issues(states: %(states)s, first: 100, after: $endCursor%(filter)s) {
+    issues(states: OPEN, first: $first, after: $after,
+           orderBy: {field: CREATED_AT, direction: DESC}) {
+      totalCount
       pageInfo { hasNextPage endCursor }
-      nodes {
-        number state title url body
-        comments { totalCount }
-        assignees(first: 1) { totalCount }
-        labels(first: 20) { nodes { name } }
-        closedByPullRequestsReferences(first: 10, includeClosedPrs: true) {
-          nodes { url state mergedAt }
-        }
-      }
+      nodes { ...IssueFields }
     }
   }
 }
 """
-_FULL_QUERY = _ISSUES_QUERY % {"since_var": "", "states": "OPEN", "filter": ""}
-_SINCE_QUERY = _ISSUES_QUERY % {
-    "since_var": ", $since: DateTime!",
-    "states": "[OPEN, CLOSED]",
-    "filter": ", filterBy: {since: $since}",
+    + _FIELDS
+)
+# Every issue, open or closed, updated since the last run.
+_SYNC_QUERY = (
+    """
+query($owner: String!, $name: String!, $since: DateTime!, $endCursor: String) {
+  repository(owner: $owner, name: $name) {
+    issues(states: [OPEN, CLOSED], first: 100, after: $endCursor,
+           filterBy: {since: $since}) {
+      pageInfo { hasNextPage endCursor }
+      nodes { ...IssueFields }
+    }
+  }
 }
+"""
+    + _FIELDS
+)
+_TOTAL_QUERY = """
+query($owner: String!, $name: String!) {
+  repository(owner: $owner, name: $name) { issues(states: OPEN) { totalCount } }
+}
+"""
 # Margin for clock skew between this machine and GitHub.
 _SINCE_SKEW = timedelta(minutes=5)
+_PAGE = 100  # GitHub's maximum page size
+_LOOKUP_CHUNK = 50
 
 
 @dataclass(frozen=True)
@@ -79,41 +103,132 @@ class Issue:
         )
 
 
-def _fetch_nodes(repo: str, since: datetime | None = None) -> list[dict]:
-    owner, name = repo.split("/")
-    if since is None:
-        pages = gh.graphql(_FULL_QUERY, owner=owner, name=name)
-    else:
-        stamp = (since - _SINCE_SKEW).strftime("%Y-%m-%dT%H:%M:%SZ")
-        pages = gh.graphql(_SINCE_QUERY, owner=owner, name=name, since=stamp)
+@dataclass(frozen=True)
+class IssueSet:
+    """The open issues known so far, and how they relate to all of them."""
+
+    issues: list[Issue]
+    total_open: int  # open issues on GitHub
+    complete: bool  # every open issue has been fetched
+
+
+def _walk(
+    owner: str, name: str, after: str | None, count: int | None
+) -> tuple[list[dict], str | None, bool]:
+    """Up to ``count`` (all if None) open issues after ``after``.
+
+    Returns the nodes, the cursor to continue from, and whether the end of
+    the list was reached.
+    """
+    nodes: list[dict] = []
+    while count is None or len(nodes) < count:
+        first = _PAGE if count is None else min(_PAGE, count - len(nodes))
+        conn = gh.graphql_once(
+            _WALK_QUERY, owner=owner, name=name, first=first, after=after
+        )["repository"]["issues"]
+        nodes += conn["nodes"]
+        if not conn["pageInfo"]["hasNextPage"]:
+            return nodes, None, True
+        after = conn["pageInfo"]["endCursor"]
+    return nodes, after, False
+
+
+def _sync(owner: str, name: str, since: datetime) -> list[dict]:
+    stamp = (since - _SINCE_SKEW).strftime("%Y-%m-%dT%H:%M:%SZ")
+    pages = gh.graphql(_SYNC_QUERY, owner=owner, name=name, since=stamp)
     return [node for page in pages for node in page["repository"]["issues"]["nodes"]]
 
 
-def fetch_open_issues(repo: str, cache: IssueCache | None = None) -> list[Issue]:
-    """Return open issues for ``owner/name``, with their linked PRs.
+def _lookup(owner: str, name: str, numbers: list[int]) -> dict[int, dict | None]:
+    """The issue node for each number; None for pull requests and unknowns."""
+    found: dict[int, dict | None] = {}
+    for i in range(0, len(numbers), _LOOKUP_CHUNK):
+        chunk = numbers[i : i + _LOOKUP_CHUNK]
+        fields = "\n".join(
+            f"i{n}: issueOrPullRequest(number: {n}) {{ __typename ...IssueFields }}"
+            for n in chunk
+        )
+        query = (
+            "query($owner: String!, $name: String!) {\n"
+            f"  repository(owner: $owner, name: $name) {{\n{fields}\n  }}\n}}\n"
+            + _FIELDS
+        )
+        repo = gh.graphql_once(query, allow_not_found=True, owner=owner, name=name)
+        for n in chunk:
+            node = repo["repository"].get(f"i{n}")
+            found[n] = node if node and node["__typename"] == "Issue" else None
+    return found
 
-    With a ``cache``, only issues updated since the last run are fetched.
+
+def _open_total(owner: str, name: str) -> int:
+    data = gh.graphql_once(_TOTAL_QUERY, owner=owner, name=name)
+    return data["repository"]["issues"]["totalCount"]
+
+
+def fetch_issues(
+    repo: str,
+    cache: IssueCache | None = None,
+    *,
+    batch: int | None = 100,
+    wanted: tuple[int, ...] = (),
+    extra: tuple[int, ...] = (),
+) -> IssueSet:
+    """Bring the known open issues of ``owner/name`` up to date.
+
+    Each call fetches the next ``batch`` open issues (all if None), drops or
+    refreshes known issues that changed since the previous call, and looks
+    up the issues in ``wanted`` plus up to ``batch`` of ``extra`` whose state
+    isn't known yet. With a ``cache`` the next call continues from here.
     """
     if not _REPO_RE.fullmatch(repo):
         raise ValueError(f"expected owner/name, got {repo!r}")
-    if cache is None:
-        return [Issue.from_graphql(n) for n in _fetch_nodes(repo)]
-
+    owner, name = repo.split("/")
     now = now_utc()
-    entry = cache.load(repo, now)
-    if entry is None:
-        nodes = {n["number"]: n for n in _fetch_nodes(repo)}
-        full_fetch_at = now
-    else:
-        nodes = dict(entry.nodes)
-        for node in _fetch_nodes(repo, since=entry.fetched_at):
-            if node["state"] == "OPEN":
-                nodes[node["number"]] = node
-            else:
-                nodes.pop(node["number"], None)
-        full_fetch_at = entry.full_fetch_at
-    cache.save(repo, CacheEntry(full_fetch_at, now, nodes))
-    return [Issue.from_graphql(n) for n in nodes.values()]
+    entry = (cache.load(repo) if cache else None) or CacheEntry()
+    nodes, closed = dict(entry.nodes), set(entry.closed)
+
+    def add(node: dict) -> None:
+        if node["state"] == "OPEN":
+            nodes[node["number"]] = node
+            closed.discard(node["number"])
+        else:
+            nodes.pop(node["number"], None)
+            closed.add(node["number"])
+
+    if entry.fetched_at is not None:
+        for node in _sync(owner, name, entry.fetched_at):
+            add(node)
+
+    cursor, complete = entry.cursor, entry.complete
+    if not complete and batch != 0:
+        page, cursor, complete = _walk(owner, name, cursor, batch)
+        for node in page:
+            add(node)
+
+    def unknown(numbers: tuple[int, ...]) -> list[int]:
+        return [n for n in dict.fromkeys(numbers) if n not in nodes and n not in closed]
+
+    extra_unknown = unknown(extra)
+    lookups = unknown(wanted) + (
+        extra_unknown if batch is None else extra_unknown[:batch]
+    )
+    for n, node in _lookup(owner, name, lookups).items():
+        if node is None:
+            closed.add(n)  # a pull request or no such issue: never open
+        else:
+            add(node)
+
+    total_open = _open_total(owner, name)
+    if cache:
+        cache.save(repo, CacheEntry(now, cursor, complete, nodes, frozenset(closed)))
+    return IssueSet(
+        [Issue.from_graphql(n) for n in nodes.values()], total_open, complete
+    )
+
+
+def fetch_open_issues(repo: str, cache: IssueCache | None = None) -> list[Issue]:
+    """Every open issue of ``owner/name``."""
+    return fetch_issues(repo, cache, batch=None).issues
 
 
 def score_reasons(issue: Issue) -> list[tuple[int, str]]:

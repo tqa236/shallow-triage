@@ -130,9 +130,13 @@ def fix_branches(path: Path, base: str, patterns: tuple[str, ...]) -> list[FixBr
 
 
 def closing_commits(
-    path: Path, base: str, issues: set[int], *, since: str | None = None
+    path: Path, base: str, *, since: str | None = None
 ) -> dict[int, list[Commit]]:
-    """Commits on ``base`` that close one of ``issues`` by keyword, newest first."""
+    """Commits on ``base`` that close an issue by keyword, by issue number.
+
+    Numbers are in history order of their latest such commit, most recent
+    first. Whether each issue is still open is for the caller to find out.
+    """
     found: dict[int, list[Commit]] = {}
     for commit in _log(path, "-i", "-E", "--grep=(fix|close|resolve)", base):
         # filtered here: git's --since stops at the first older commit, so it
@@ -140,6 +144,6 @@ def closing_commits(
         if since and commit.date < since:
             continue
         for n in closing_refs(f"{commit.subject}\n{commit.body}"):
-            if n in issues and commit not in found.get(n, []):
+            if commit not in found.get(n, []):
                 found.setdefault(n, []).append(commit)
     return found

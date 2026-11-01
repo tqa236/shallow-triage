@@ -5,7 +5,7 @@ import pytest
 
 from shallow_triage import cache as cache_mod
 from shallow_triage import issues
-from shallow_triage.cache import CACHE_VERSION, IssueCache
+from shallow_triage.cache import IssueCache
 
 T0 = datetime(2026, 11, 1, 12, tzinfo=UTC)
 
@@ -25,22 +25,60 @@ def _node(n, state="OPEN", title=None):
 
 
 class FakeGitHub:
-    """Stands in for _fetch_nodes and records each call's ``since``."""
+    """Issues 1..n in memory, standing in for the GraphQL calls.
 
-    def __init__(self):
+    The walk goes newest first (highest number first); its cursor is the
+    number of issues already returned. ``calls`` records what was asked.
+    """
+
+    def __init__(self, n):
+        # created and last updated a day before the first run
+        self.issues = {i: (_node(i), T0 - timedelta(days=1)) for i in range(1, n + 1)}
+        self.prs = set()
         self.calls = []
-        self.full = []
-        self.updated = []
 
-    def __call__(self, repo, since=None):
-        self.calls.append(since)
-        return self.full if since is None else self.updated
+    def update(self, n, at, **changes):
+        node = dict(self.issues.get(n, (_node(n), at))[0], **changes)
+        self.issues[n] = (node, at)
+
+    def open_newest_first(self):
+        return [
+            node
+            for _, (node, _) in sorted(self.issues.items(), reverse=True)
+            if node["state"] == "OPEN"
+        ]
+
+    def walk(self, owner, name, after, count):
+        self.calls.append(("walk", after, count))
+        start = int(after or 0)
+        nodes = self.open_newest_first()
+        end = len(nodes) if count is None else start + count
+        page = nodes[start:end]
+        done = end >= len(nodes)
+        return page, None if done else str(end), done
+
+    def sync(self, owner, name, since):
+        self.calls.append(("sync", since))
+        return [node for node, at in self.issues.values() if at >= since]
+
+    def lookup(self, owner, name, numbers):
+        self.calls.append(("lookup", tuple(numbers)))
+        return {
+            n: None if n in self.prs or n not in self.issues else self.issues[n][0]
+            for n in numbers
+        }
+
+    def total(self, owner, name):
+        return len(self.open_newest_first())
 
 
 @pytest.fixture
 def github(monkeypatch):
-    fake = FakeGitHub()
-    monkeypatch.setattr(issues, "_fetch_nodes", fake)
+    fake = FakeGitHub(250)
+    monkeypatch.setattr(issues, "_walk", fake.walk)
+    monkeypatch.setattr(issues, "_sync", fake.sync)
+    monkeypatch.setattr(issues, "_lookup", fake.lookup)
+    monkeypatch.setattr(issues, "_open_total", fake.total)
     return fake
 
 
@@ -51,89 +89,85 @@ def clock(monkeypatch):
     return now
 
 
-def _titles(got):
-    return sorted((i.number, i.title) for i in got)
+def _numbers(found):
+    return sorted(i.number for i in found.issues)
 
 
-def test_incremental_refresh(tmp_path, github, clock):
+def test_each_run_adds_a_batch(tmp_path, github, clock):
     c = IssueCache(tmp_path)
-    github.full = [_node(1), _node(2), _node(3)]
-    assert _titles(issues.fetch_open_issues("o/r", c)) == [
-        (1, "t1"),
-        (2, "t2"),
-        (3, "t3"),
-    ]
-    assert github.calls == [None]
+    first = issues.fetch_issues("o/r", c, batch=100)
+    assert _numbers(first) == list(range(151, 251))  # newest first
+    assert (first.total_open, first.complete) == (250, False)
+    assert github.calls == [("walk", None, 100), ("lookup", ())]
 
-    # next run: 2 was edited, 3 closed, 4 opened
     clock[0] = T0 + timedelta(hours=1)
-    github.updated = [_node(2, title="new"), _node(3, "CLOSED"), _node(4)]
-    got = issues.fetch_open_issues("o/r", c)
-    assert _titles(got) == [(1, "t1"), (2, "new"), (4, "t4")]
-    assert github.calls == [None, T0]  # asked only for changes since the last run
+    second = issues.fetch_issues("o/r", c, batch=100)
+    assert _numbers(second) == list(range(51, 251))
+    assert github.calls[-3:] == [("sync", T0), ("walk", "100", 100), ("lookup", ())]
 
-    # the run after that asks since the second run
     clock[0] = T0 + timedelta(hours=2)
-    github.updated = []
-    assert len(issues.fetch_open_issues("o/r", c)) == 3
-    assert github.calls[-1] == T0 + timedelta(hours=1)
+    third = issues.fetch_issues("o/r", c, batch=100)
+    assert _numbers(third) == list(range(1, 251)) and third.complete
+
+    # nothing left to walk: later runs only sync
+    clock[0] = T0 + timedelta(hours=3)
+    github.calls.clear()
+    issues.fetch_issues("o/r", c, batch=100)
+    assert [call[0] for call in github.calls] == ["sync", "lookup"]
 
 
-def test_full_fetch_when_old_or_refreshing(tmp_path, github, clock):
-    github.full = [_node(1)]
-    issues.fetch_open_issues("o/r", IssueCache(tmp_path))
+def test_sync_drops_closed_and_refreshes_changed(tmp_path, github, clock):
+    c = IssueCache(tmp_path)
+    issues.fetch_issues("o/r", c, batch=10)  # 241..250
 
-    clock[0] = T0 + timedelta(hours=25)  # older than the default 24h
-    issues.fetch_open_issues("o/r", IssueCache(tmp_path))
-    assert github.calls == [None, None]
+    clock[0] = T0 + timedelta(hours=1)
+    github.update(250, clock[0], state="CLOSED")
+    github.update(249, clock[0], title="edited")
+    github.update(5, clock[0], title="old but active")  # not walked yet
+    found = issues.fetch_issues("o/r", c, batch=0)  # sync only
 
-    issues.fetch_open_issues("o/r", IssueCache(tmp_path, refresh=True))
-    assert github.calls == [None, None, None]
+    titles = {i.number: i.title for i in found.issues}
+    assert 250 not in titles
+    assert titles[249] == "edited"
+    assert titles[5] == "old but active"  # recently active issues join early
 
-    issues.fetch_open_issues("o/r", IssueCache(tmp_path))
-    assert github.calls[-1] == T0 + timedelta(hours=25)
+
+def test_lookups_for_fix_branches_and_closing_commits(tmp_path, github, clock):
+    c = IssueCache(tmp_path)
+    github.update(7, T0, state="CLOSED")
+    github.prs.add(8)
+    found = issues.fetch_issues("o/r", c, batch=2, wanted=(3, 7), extra=(9, 8, 4, 2, 1))
+    # wanted: always; extra: at most `batch` of the unknown ones
+    assert github.calls[-1] == ("lookup", (3, 7, 9, 8))
+    assert {3, 9} <= set(_numbers(found)) and 7 not in _numbers(found)
+
+    # known states are remembered: only the rest are looked up next time
+    clock[0] = T0 + timedelta(hours=1)
+    issues.fetch_issues("o/r", c, batch=2, wanted=(3, 7), extra=(9, 8, 4, 2, 1))
+    assert github.calls[-1] == ("lookup", (4, 2))
 
 
-@pytest.mark.parametrize(
-    "content", ["not json", '{"version": 0}', f'{{"version": {CACHE_VERSION}}}']
-)
-def test_unusable_cache_file_means_full_fetch(tmp_path, github, clock, content):
-    path = tmp_path / "o" / "r.json"
-    path.parent.mkdir()
-    path.write_text(content)
-    github.full = [_node(1)]
-    assert len(issues.fetch_open_issues("o/r", IssueCache(tmp_path))) == 1
-    assert github.calls == [None]
+def test_all_fetches_everything(tmp_path, github, clock):
+    found = issues.fetch_issues("o/r", IssueCache(tmp_path), batch=None)
+    assert len(found.issues) == 250 and found.complete
+
+
+def test_refresh_starts_over(tmp_path, github, clock):
+    issues.fetch_issues("o/r", IssueCache(tmp_path), batch=10)
+    found = issues.fetch_issues("o/r", IssueCache(tmp_path, refresh=True), batch=10)
+    assert github.calls[-2] == ("walk", None, 10)
+    assert len(found.issues) == 10
 
 
 def test_no_cache_does_not_write(tmp_path, github, clock):
-    github.full = [_node(1)]
-    issues.fetch_open_issues("o/r")
+    issues.fetch_issues("o/r", batch=10)
+    issues.fetch_issues("o/r", batch=10)
+    assert github.calls[-2] == ("walk", None, 10)  # started from scratch again
     assert not list(tmp_path.iterdir())
 
 
-def test_since_query_is_sent_with_skew(monkeypatch):
-    sent = {}
-
-    def fake_graphql(query, **variables):
-        sent.update(variables, query=query)
-        return []
-
-    monkeypatch.setattr(issues.gh, "graphql", fake_graphql)
-    issues._fetch_nodes("o/r", since=T0)
-    assert sent["since"] == "2026-11-01T11:55:00Z"
-    assert "filterBy: {since: $since}" in sent["query"]
-    assert "[OPEN, CLOSED]" in sent["query"]
-
-
-def test_default_cache_dir(monkeypatch, tmp_path):
-    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
-    assert cache_mod.default_cache_dir() == tmp_path / "shallow-triage"
-
-
 def test_cache_files_are_owner_only(tmp_path, github, clock):
-    github.full = [_node(1)]
-    issues.fetch_open_issues("o/r", IssueCache(tmp_path / "c"))
+    issues.fetch_issues("o/r", IssueCache(tmp_path / "c"), batch=1)
     path = tmp_path / "c" / "o" / "r.json"
     assert path.stat().st_mode & 0o777 == 0o600
     assert path.parent.stat().st_mode & 0o777 == 0o700
@@ -141,22 +175,93 @@ def test_cache_files_are_owner_only(tmp_path, github, clock):
 
 
 @pytest.mark.parametrize(
-    "bad",
+    "change",
     [
-        {"number": '1"><b>x</b>'},
-        {"url": "javascript:alert(1)"},
-        {"url": "https://evil.example/"},
+        lambda d: d["nodes"][0].update(number='1"><b>x</b>'),
+        lambda d: d["nodes"][0].update(url="javascript:alert(1)"),
+        lambda d: d["nodes"][0].update(url="https://evil.example/"),
+        lambda d: d.update(closed=["1"]),
+        lambda d: d.update(cursor=5),
+        lambda d: d.update(version=1),
     ],
 )
-def test_tampered_cache_entry_is_refetched(tmp_path, github, clock, bad):
+def test_unusable_cache_starts_over(tmp_path, github, clock, change):
     c = IssueCache(tmp_path)
-    github.full = [_node(1)]
-    issues.fetch_open_issues("o/r", c)
+    issues.fetch_issues("o/r", c, batch=1)
     path = tmp_path / "o" / "r.json"
     data = json.loads(path.read_text())
-    data["nodes"][0].update(bad)
+    change(data)
     path.write_text(json.dumps(data))
 
-    got = issues.fetch_open_issues("o/r", c)
-    assert github.calls == [None, None]  # full fetch, not an incremental one
-    assert [i.url for i in got] == ["https://github.com/o/r/issues/1"]
+    issues.fetch_issues("o/r", c, batch=1)
+    assert github.calls[-2] == ("walk", None, 1)  # from the start, no sync
+
+
+@pytest.mark.parametrize("content", ["not json", "{}"])
+def test_broken_cache_file_starts_over(tmp_path, github, clock, content):
+    path = tmp_path / "o" / "r.json"
+    path.parent.mkdir()
+    path.write_text(content)
+    issues.fetch_issues("o/r", IssueCache(tmp_path), batch=1)
+    assert github.calls == [("walk", None, 1), ("lookup", ())]
+
+
+def test_sync_query_is_sent_with_skew(monkeypatch):
+    sent = {}
+
+    def fake_graphql(query, **variables):
+        sent.update(variables, query=query)
+        return []
+
+    monkeypatch.setattr(issues.gh, "graphql", fake_graphql)
+    issues._sync("o", "r", T0)
+    assert sent["since"] == "2026-11-01T11:55:00Z"
+    assert "filterBy: {since: $since}" in sent["query"]
+    assert "[OPEN, CLOSED]" in sent["query"]
+
+
+def test_walk_pages_and_cursor(monkeypatch):
+    pages = {
+        None: (["a", "b"], True, "c1"),
+        "c1": (["c"], False, None),
+    }
+    asked = []
+
+    def fake_once(query, **v):
+        asked.append((v["first"], v["after"]))
+        nodes, more, end = pages[v["after"]]
+        return {
+            "repository": {
+                "issues": {
+                    "nodes": nodes,
+                    "pageInfo": {"hasNextPage": more, "endCursor": end},
+                }
+            }
+        }
+
+    monkeypatch.setattr(issues.gh, "graphql_once", fake_once)
+    assert issues._walk("o", "r", None, 2) == (["a", "b"], "c1", False)
+    assert issues._walk("o", "r", None, None) == (["a", "b", "c"], None, True)
+    assert asked == [(2, None), (100, None), (100, "c1")]
+
+
+def test_lookup_treats_prs_and_missing_as_not_open(monkeypatch):
+    def fake_once(query, *, allow_not_found, **v):
+        assert allow_not_found
+        assert "i1: issueOrPullRequest(number: 1)" in query
+        return {
+            "repository": {
+                "i1": dict(_node(1), __typename="Issue"),
+                "i2": {"__typename": "PullRequest"},
+                "i3": None,
+            }
+        }
+
+    monkeypatch.setattr(issues.gh, "graphql_once", fake_once)
+    found = issues._lookup("o", "r", [1, 2, 3])
+    assert found[1]["number"] == 1 and found[2] is None and found[3] is None
+
+
+def test_default_cache_dir(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    assert cache_mod.default_cache_dir() == tmp_path / "shallow-triage"
