@@ -1,23 +1,39 @@
-"""Command-line entry point: ``shallow-triage candidates owner/repo``."""
+"""Command-line entry point.
+
+``shallow-triage candidates owner/repo`` prints ranked issues as JSON;
+``shallow-triage page owner/repo -o triage.html`` renders them as HTML.
+"""
 
 import argparse
 import json
 import sys
+from datetime import UTC, datetime
+from pathlib import Path
 
 from shallow_triage import gh
 from shallow_triage.issues import fetch_open_issues, rank, score_issue
+from shallow_triage.page import render_page
+
+
+def _add_common(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("repo", help="owner/name")
+    parser.add_argument("-n", "--limit", type=int, default=10)
+    parser.add_argument(
+        "--include-linked",
+        action="store_true",
+        help="keep issues that already have an open linked PR",
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="shallow-triage")
     sub = parser.add_subparsers(dest="command", required=True)
     cand = sub.add_parser("candidates", help="list the most triageable open issues")
-    cand.add_argument("repo", help="owner/name")
-    cand.add_argument("-n", "--limit", type=int, default=10)
-    cand.add_argument(
-        "--include-linked",
-        action="store_true",
-        help="keep issues that already have an open linked PR",
+    _add_common(cand)
+    page = sub.add_parser("page", help="render the triage page as HTML")
+    _add_common(page)
+    page.add_argument(
+        "-o", "--output", type=Path, help="write to this file instead of stdout"
     )
     args = parser.parse_args(argv)
 
@@ -26,7 +42,21 @@ def main(argv: list[str] | None = None) -> int:
     except (gh.GhError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    issues = rank(issues, args.limit, include_linked=args.include_linked)
+    ranked = rank(issues, args.limit, include_linked=args.include_linked)
+
+    if args.command == "page":
+        html = render_page(
+            args.repo,
+            ranked,
+            total_open=len(issues),
+            generated_at=datetime.now(UTC),
+        )
+        if args.output:
+            args.output.write_text(html, encoding="utf-8")
+        else:
+            sys.stdout.write(html)
+        return 0
+
     out = [
         {
             "number": i.number,
@@ -35,7 +65,7 @@ def main(argv: list[str] | None = None) -> int:
             "score": score_issue(i),
             "linked_prs": list(i.linked_prs),
         }
-        for i in issues
+        for i in ranked
     ]
     json.dump(out, sys.stdout, indent=2)
     print()
