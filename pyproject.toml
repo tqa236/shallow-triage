@@ -31,6 +31,9 @@ dependencies = []
 [project.scripts]
 shallow-triage = "shallow_triage.cli:main"
 
+[tool.setuptools.package-data]
+shallow_triage = ["templates/*"]
+
 [dependency-groups]
 dev = [{include-group = "test"}, {include-group = "lint"}]
 test = ["pytest"]
