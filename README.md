@@ -15,6 +15,11 @@ Builds triage pages for GitHub repositories. Each repository page lists:
 An overview page links to every repository page, and each page starts with a
 table of contents.
 
+The intended split is that a coding agent does the triage work (picks issues,
+reproduces them, writes fixes on local branches) and a human reviews the
+result on these pages and decides what to submit. See
+[Working with an agent](#working-with-an-agent).
+
 ## Install
 
 Requires Python 3.13+, git, and the [GitHub CLI](https://cli.github.com/).
@@ -97,6 +102,14 @@ than `--max-age` hours.
 
 The cache holds public issue data only. Repositories in a site are processed
 in parallel.
+
+## Working with an agent
+
+The intended workflow is that an agent picks and fixes issues on local
+branches and a human reviews them on the pages. The agent's instructions
+(rules, step-by-step workflow, the JSON output, commit message format and
+hand-off checklist) are in [docs/triage-agent.md](docs/triage-agent.md);
+point the agent to that file.
 
 ## Development
 
