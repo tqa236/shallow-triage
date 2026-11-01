@@ -31,3 +31,16 @@ def test_api_flattens_pages(monkeypatch):
         lambda *a, **k: subprocess.CompletedProcess(a[0], 0, "[[1, 2], [3]]", ""),
     )
     assert gh.api("x", paginate=True) == [1, 2, 3]
+
+
+def test_graphql_passes_variables_and_unwraps_data(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, '[{"data": {"a": 1}}]', "")
+
+    monkeypatch.setattr(gh.shutil, "which", lambda _: "/usr/bin/gh")
+    monkeypatch.setattr(gh.subprocess, "run", fake_run)
+    assert gh.graphql("q", owner="o") == [{"a": 1}]
+    assert calls[0][-2:] == ["-f", "owner=o"]
