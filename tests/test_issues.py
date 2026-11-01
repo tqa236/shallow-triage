@@ -34,9 +34,10 @@ def test_fetch_parses_pages_and_open_linked_prs(monkeypatch):
     assert got[0].labels == {"bug"}
 
 
-def test_fetch_rejects_bad_repo():
+@pytest.mark.parametrize("repo", ["not-a-repo", "o/r/x", "../x", "o/..", "o/.", "/r"])
+def test_fetch_rejects_bad_repo(repo):
     with pytest.raises(ValueError):
-        issues.fetch_open_issues("not-a-repo")
+        issues.fetch_open_issues(repo)
 
 
 def test_score_prefers_reproducible_bugs():

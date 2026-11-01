@@ -11,6 +11,9 @@ _REPRO_RE = re.compile(
 _GOOD_LABELS = {"bug", "good first issue", "documentation", "docs", "regression"}
 _BAD_LABELS = {"question", "discussion", "needs-design", "wontfix", "duplicate"}
 
+# GitHub owner and repo names; also keeps them safe to use as file paths.
+_REPO_RE = re.compile(r"^[A-Za-z0-9-]+/(?!\.\.?$)[A-Za-z0-9._-]+$")
+
 _ISSUES_QUERY = """
 query($owner: String!, $name: String!, $endCursor: String) {
   repository(owner: $owner, name: $name) {
@@ -59,9 +62,9 @@ class Issue:
 
 def fetch_open_issues(repo: str) -> list[Issue]:
     """Return open issues for ``owner/name``, with their open linked PRs."""
-    owner, _, name = repo.partition("/")
-    if not owner or not name:
+    if not _REPO_RE.match(repo):
         raise ValueError(f"expected owner/name, got {repo!r}")
+    owner, name = repo.split("/")
     pages = gh.graphql(_ISSUES_QUERY, owner=owner, name=name)
     return [
         Issue.from_graphql(node)
