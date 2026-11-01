@@ -1,7 +1,7 @@
 import pytest
 
 from shallow_triage import issues
-from shallow_triage.issues import Issue, rank, score_issue
+from shallow_triage.issues import Issue, rank, score_issue, score_reasons
 
 
 def _issue(n, body="", labels=(), **kw):
@@ -43,6 +43,17 @@ def test_score_prefers_reproducible_bugs():
     good = _issue(1, "Steps to reproduce:\n```py\nx()\n```", {"bug"})
     vague = _issue(2, "what about X?", {"question"})
     assert score_issue(good) > 0 > score_issue(vague)
+
+
+def test_score_is_sum_of_reasons():
+    issue = _issue(1, "Traceback ...", {"bug", "question"}, comments=30)
+    assert score_reasons(issue) == [
+        (3, "has reproduction steps or code"),
+        (2, "labelled 'bug'"),
+        (-3, "labelled 'question'"),
+        (-2, "long thread (30 comments)"),
+    ]
+    assert score_issue(issue) == 0
 
 
 def test_rank_orders_and_limits():

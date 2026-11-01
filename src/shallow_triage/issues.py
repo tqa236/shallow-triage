@@ -70,18 +70,26 @@ def fetch_open_issues(repo: str) -> list[Issue]:
     ]
 
 
+def score_reasons(issue: Issue) -> list[tuple[int, str]]:
+    """Return the ``(points, reason)`` pairs that make up an issue's score."""
+    reasons = []
+    if _REPRO_RE.search(issue.body):
+        reasons.append((3, "has reproduction steps or code"))
+    for label in sorted(issue.labels & _GOOD_LABELS):
+        reasons.append((2, f"labelled {label!r}"))
+    for label in sorted(issue.labels & _BAD_LABELS):
+        reasons.append((-3, f"labelled {label!r}"))
+    if issue.assigned:
+        reasons.append((-2, "already assigned"))
+    if issue.comments > 20:
+        # long threads tend to be contentious or underspecified
+        reasons.append((-2, f"long thread ({issue.comments} comments)"))
+    return reasons
+
+
 def score_issue(issue: Issue) -> int:
     """Heuristic score; higher means more objective and fixable."""
-    score = 0
-    if _REPRO_RE.search(issue.body):
-        score += 3
-    score += 2 * len(issue.labels & _GOOD_LABELS)
-    score -= 3 * len(issue.labels & _BAD_LABELS)
-    if issue.assigned:
-        score -= 2
-    if issue.comments > 20:
-        score -= 2  # long threads tend to be contentious or underspecified
-    return score
+    return sum(points for points, _ in score_reasons(issue))
 
 
 def rank(
