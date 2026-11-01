@@ -1,7 +1,10 @@
-"""Render triage reports as self-contained HTML pages.
+"""The HTML output: render saved triage reports as self-contained pages.
 
-The markup and styles live in ``templates/``; this module prepares the
-values. Every value is HTML-escaped here before it is put in a template.
+This module only formats a :class:`~shallow_triage.report.RepoReport`; it
+computes nothing and reads no input, so the pages can be restyled or
+rearranged and rendered again from saved reports. The markup and styles live
+in ``templates/``; every value is HTML-escaped here before it goes into a
+template.
 
 Pages may be shared, so they never show where the local clones are, and the
 user's home folder is replaced by ``~`` wherever it appears in the text.
@@ -9,7 +12,6 @@ user's home folder is replaced by ``~`` wherever it appears in the text.
 
 import re
 import shlex
-from dataclasses import dataclass
 from datetime import datetime
 from functools import cache
 from html import escape
@@ -17,9 +19,9 @@ from importlib.resources import files
 from pathlib import Path
 from string import Template
 
-from shallow_triage.issues import Issue, score_issue, score_reasons
+from shallow_triage.issues import Issue
 from shallow_triage.local import FixBranch
-from shallow_triage.report import Closable, FixEntry, RepoReport
+from shallow_triage.report import Candidate, Closable, FixEntry, RepoReport
 
 _CODE_BLOCK_RE = re.compile(r"```.*?(```|$)", re.S)
 _EXCERPT_LEN = 280
@@ -70,14 +72,15 @@ def _linked_prs(issue: Issue) -> str:
     return f'<p class="linked">Open PRs: {links}</p>'
 
 
-def _candidate_html(issue: Issue) -> str:
+def _candidate_html(candidate: Candidate) -> str:
+    issue = candidate.issue
     reasons = "".join(
         f'<span class="{"plus" if pts > 0 else "minus"}">{pts:+d} {escape(why)}</span>'
-        for pts, why in score_reasons(issue)
+        for pts, why in candidate.reasons
     )
     return _render(
         "candidate.html",
-        score=f"{score_issue(issue):+d}",
+        score=f"{candidate.score:+d}",
         title=_issue_title(issue),
         excerpt=escape(excerpt(issue.body)),
         reasons=reasons or "<span>no signals</span>",
@@ -110,14 +113,14 @@ def _diff_html(diff: str) -> str:
 def _commands(report: RepoReport, branch: FixBranch) -> str:
     """Shell commands to copy. Every value is quoted: git allows ``;``, ``|``
     and ``$`` in branch names, and the human pastes these into a shell."""
-    cfg = report.config
     files = " ".join(shlex.quote(f) for f in branch.files_to_test)
-    test = cfg.test.replace("{files}", files)
-    name = shlex.quote(branch.name)
+    switch = f"git switch {shlex.quote(branch.name)}"
     cmds = [
-        f"# in your clone of {cfg.name}",
-        f"git diff {shlex.quote(f'{cfg.base}...{branch.name}')}",
-        f"git switch {name} && {test}",
+        f"# in your clone of {report.repo}",
+        f"git diff {shlex.quote(f'{report.base}...{branch.name}')}",
+        f"{switch} && {report.test.replace('{files}', files)}"
+        if report.test
+        else switch,
     ]
     return escape("\n".join(cmds))
 
@@ -159,7 +162,7 @@ def _fix_html(report: RepoReport, entry: FixEntry) -> str:
 
 
 def _closable_html(report: RepoReport, item: Closable) -> str:
-    repo = report.config.name
+    repo = report.repo
     evidence = [
         f"<li>{_link(f'https://github.com/{repo}/commit/{c.sha}', c.sha[:10])} "
         f"({escape(c.date)}) {escape(c.subject)}</li>"
@@ -189,7 +192,7 @@ def _section(id_: str, title: str, note: str, items: list[str]) -> str:
 def _closed_fixes_html(report: RepoReport) -> str:
     if not report.closed_fixes:
         return ""
-    repo = report.config.name
+    repo = report.repo
     items = "".join(
         f"<li><code>{escape(b.name)}</code> → "
         f"{_link(f'https://github.com/{repo}/issues/{b.issue}', f'#{b.issue}')}</li>"
@@ -241,20 +244,18 @@ def _when(generated_at: datetime) -> str:
     return generated_at.strftime("%Y-%m-%d %H:%M %Z").strip()
 
 
-def render_page(
-    report: RepoReport, *, generated_at: datetime, back_href: str | None = None
-) -> str:
+def render_page(report: RepoReport, *, back_href: str | None = None) -> str:
     """Return a complete HTML document for one repository's report."""
-    repo = report.config.name
+    repo = report.repo
     back = ""
     if back_href:
         back = f'<a class="back" href="{escape(back_href)}">← All repositories</a>'
     facts = ""
-    if report.base is not None:
+    if report.base is not None and report.base_commit is not None:
         facts = (
-            f'<p class="note">Compared with <code>{escape(report.config.base)}</code> @ '
-            f"<code>{escape(report.base.sha[:10])}</code> ({escape(report.base.date)})"
-            "</p>"
+            f'<p class="note">Compared with <code>{escape(report.base)}</code> @ '
+            f"<code>{escape(report.base_commit.sha[:10])}</code> "
+            f"({escape(report.base_commit.date)})</p>"
         )
     sections = [
         _section(
@@ -281,7 +282,7 @@ def render_page(
     coverage = f"{report.total_open} open issues"
     if report.known_open is not None:
         coverage += f", {report.known_open} fetched so far"
-    meta = f"{coverage} · generated {_when(generated_at)}"
+    meta = f"{coverage} · generated {_when(report.generated_at)}"
     body = _render(
         "repo.html",
         back=back,
@@ -294,36 +295,29 @@ def render_page(
     return _document(f"{repo} triage", body)
 
 
-@dataclass(frozen=True)
-class RepoSummary:
-    """One row of the index page."""
-
-    repo: str
-    href: str
-    total_open: int
-    fixes: int
-    closable: int
-    candidates: int
+def page_href(report: RepoReport) -> str:
+    """Where :func:`render_page`'s output goes, relative to the index."""
+    return f"{report.repo}.html"
 
 
-def render_index(summaries: list[RepoSummary], *, generated_at: datetime) -> str:
-    """Return the overview page linking to each repository's triage page."""
+def render_index(reports: list[RepoReport], *, generated_at: datetime) -> str:
+    """Return the overview page linking to each repository's page."""
 
-    def count(s: RepoSummary, n: int, section: str) -> str:
-        return _link(f"{s.href}#{section}", str(n)) if n else "0"
+    def count(r: RepoReport, n: int, section: str) -> str:
+        return _link(f"{page_href(r)}#{section}", str(n)) if n else "0"
 
     rows = "".join(
         _render(
             "index_row.html",
-            repo_link=_link(s.href, s.repo),
-            total_open=s.total_open,
-            fixes=count(s, s.fixes, "ready"),
-            closable=count(s, s.closable, "closable"),
-            candidates=count(s, s.candidates, "candidates"),
+            repo_link=_link(page_href(r), r.repo),
+            total_open=r.total_open,
+            fixes=count(r, len(r.fixes), "ready"),
+            closable=count(r, len(r.closable), "closable"),
+            candidates=count(r, len(r.candidates), "candidates"),
         )
-        for s in summaries
+        for r in reports
     )
-    meta = f"{len(summaries)} repositories · generated {_when(generated_at)}"
+    meta = f"{len(reports)} repositories · generated {_when(generated_at)}"
     return _document(
         "Triage overview", _render("index.html", meta=escape(meta), rows=rows)
     )

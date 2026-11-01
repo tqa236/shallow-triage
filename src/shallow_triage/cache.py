@@ -7,15 +7,17 @@ fetching the whole backlog. No token is stored, but entries for a private
 repository hold its private issue content, so files are owner-only.
 """
 
-import json
 import os
-import tempfile
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
-# Bump when the stored format or the issue fields change; older entries are
-# then ignored and rebuilt.
+from shallow_triage.store import read_json, repo_path, write_private_json
+
+# Bump only when the layout of this file changes; older files are then
+# rebuilt from scratch. Changing which issue fields are fetched does not need
+# a bump: each node records its field set (issues.FIELDS_VERSION) and stale
+# nodes are refreshed a batch at a time.
 CACHE_VERSION = 2
 
 
@@ -39,15 +41,14 @@ class IssueCache:
     refresh: bool = False  # ignore what is cached and start over
 
     def _path(self, repo: str) -> Path:
-        owner, name = repo.split("/")
-        return self.directory / owner / f"{name}.json"
+        return repo_path(self.directory, repo)
 
     def load(self, repo: str) -> CacheEntry | None:
         """The cached entry, or None if missing, unreadable or refreshing."""
         if self.refresh:
             return None
         try:
-            data = json.loads(self._path(repo).read_text(encoding="utf-8"))
+            data = read_json(self._path(repo))
             if data["version"] != CACHE_VERSION:
                 return None
             entry = CacheEntry(
@@ -68,10 +69,6 @@ class IssueCache:
         return entry
 
     def save(self, repo: str, entry: CacheEntry) -> None:
-        path = self._path(repo)
-        self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-        path.parent.mkdir(mode=0o700, exist_ok=True)
-        path.parent.chmod(0o700)  # also tightens folders from older versions
         data = {
             "version": CACHE_VERSION,
             "fetched_at": entry.fetched_at.isoformat() if entry.fetched_at else None,
@@ -80,16 +77,7 @@ class IssueCache:
             "nodes": list(entry.nodes.values()),
             "closed": sorted(entry.closed),
         }
-        # mkstemp: a new owner-only (0600) file with an unpredictable name;
-        # the rename is atomic, so an interrupted run leaves the old entry
-        fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(data, f)
-            os.replace(tmp, path)
-        except BaseException:
-            os.unlink(tmp)
-            raise
+        write_private_json(self.directory, self._path(repo), data)
 
 
 def _well_formed(node: object) -> bool:

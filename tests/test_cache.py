@@ -265,3 +265,33 @@ def test_lookup_treats_prs_and_missing_as_not_open(monkeypatch):
 def test_default_cache_dir(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
     assert cache_mod.default_cache_dir() == tmp_path / "shallow-triage"
+
+
+def test_field_change_keeps_the_cache(tmp_path, github, clock, monkeypatch):
+    c = IssueCache(tmp_path)
+    issues.fetch_issues("o/r", c, batch=10)  # 241..250 with field set 1
+    github.calls.clear()
+
+    # a new version fetches more fields: old nodes are still used...
+    monkeypatch.setattr(issues, "FIELDS_VERSION", issues.FIELDS_VERSION + 1)
+    clock[0] = T0 + timedelta(hours=1)
+    found = issues.fetch_issues("o/r", c, batch=4)
+    assert len(found.issues) == 14  # 10 kept + 4 new from the walk
+    # ...and refreshed a batch at a time, not refetched all at once
+    assert github.calls[-1] == ("lookup", (250, 249, 248, 247))
+    assert github.calls[0] == ("sync", T0)  # position and history kept
+
+    clock[0] = T0 + timedelta(hours=2)
+    issues.fetch_issues("o/r", c, batch=4)
+    assert github.calls[-1] == ("lookup", (246, 245, 244, 243))
+
+
+def test_old_nodes_without_new_fields_still_parse():
+    node = {"number": 1, "url": "https://github.com/o/r/issues/1", "state": "OPEN"}
+    issue = issues.Issue.from_graphql(node)
+    assert (issue.title, issue.labels, issue.comments, issue.linked_prs) == (
+        "",
+        frozenset(),
+        0,
+        (),
+    )

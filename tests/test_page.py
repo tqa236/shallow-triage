@@ -3,13 +3,16 @@ from pathlib import Path
 
 import pytest
 
-from shallow_triage.config import RepoConfig
 from shallow_triage.issues import Issue
 from shallow_triage.local import Commit, FileChange, FixBranch
-from shallow_triage.page import _hide_home, excerpt, render_page
-from shallow_triage.report import Closable, FixEntry, RepoReport
+from shallow_triage.page import _hide_home, excerpt, render_index, render_page
+from shallow_triage.report import Candidate, Closable, FixEntry, RepoReport
 
 NOW = datetime(2026, 11, 1, tzinfo=UTC)
+
+
+def _report(**kw):
+    return RepoReport(**{"repo": "o/r", "generated_at": NOW, "total_open": 1} | kw)
 
 
 def test_excerpt_skips_code_and_truncates():
@@ -27,7 +30,8 @@ def test_render_page_escapes_and_lists_candidates():
         frozenset({"bug"}),
         linked_prs=("https://github.com/fork/r/pull/3",),
     )
-    html = render_page(RepoReport(RepoConfig("o/r"), 42, [issue]), generated_at=NOW)
+    candidate = Candidate(issue, 5, ((3, "has repro"), (2, "labelled 'bug'")))
+    html = render_page(_report(total_open=42, candidates=[candidate]))
     assert "<script>alert" not in html
     assert "&lt;script&gt;" in html
     assert "42 open issues" in html and "Candidates (1)" in html
@@ -37,9 +41,6 @@ def test_render_page_escapes_and_lists_candidates():
 
 
 def test_render_page_fixes_and_closable():
-    cfg = RepoConfig(
-        "o/r", path=Path("/src/my r"), base="upstream/main", test="bin/test {files}"
-    )
     branch = FixBranch(
         "triage/issue-7",
         7,
@@ -53,22 +54,21 @@ def test_render_page_fixes_and_closable():
         (Commit("1234567890ab", "2026-10-01", "BUG: done"),),
     )
     gone = FixBranch("fix-9-old", 9, branch.commits, (), "")
-    rep = RepoReport(
-        cfg,
-        2,
-        [],
-        [FixEntry(branch, issue)],
-        [gone],
-        [closable],
-        Commit("feedbeef00", "2026-11-01", "base"),
+    rep = _report(
+        total_open=2,
+        fixes=[FixEntry(branch, issue)],
+        closed_fixes=[gone],
+        closable=[closable],
+        base="upstream/main",
+        base_commit=Commit("feedbeef00", "2026-11-01", "base"),
+        test="bin/test {files}",
     )
-    html = render_page(rep, generated_at=NOW, back_href="../index.html")
+    html = render_page(rep, back_href="../index.html")
     assert "Ready to review (1)" in html and "Possibly closable (1)" in html
     assert "Fix &lt;x&gt;" in html and "Fixes #7" in html
     assert '<span class="add">+new &lt;b&gt;</span>' in html
     assert '<span class="del">-old</span>' in html
     assert "# in your clone of o/r" in html
-    assert "/src/my r" not in html  # the clone's location is never shown
     assert "git diff upstream/main...triage/issue-7" in html
     assert "git switch triage/issue-7 &amp;&amp; bin/test tests/test_m.py" in html
     assert "https://github.com/o/r/commit/1234567890ab" in html
@@ -89,16 +89,18 @@ def test_render_page_fixes_and_closable():
 
 
 def test_render_index_links_counts_to_sections():
-    from shallow_triage.page import RepoSummary, render_index
-
-    html = render_index([RepoSummary("o/r", "o/r.html", 9, 2, 0, 5)], generated_at=NOW)
+    fix = FixEntry(
+        FixBranch("b", 1, (Commit("a", "d", "s"),), (), ""), Issue(1, "t", "u", "")
+    )
+    cand = Candidate(Issue(2, "t", "u", ""), 0)
+    rep = _report(total_open=9, fixes=[fix, fix], candidates=[cand] * 5)
+    html = render_index([rep], generated_at=NOW)
     assert 'href="o/r.html#ready">2</a>' in html
     assert 'href="o/r.html#candidates">5</a>' in html
     assert "#closable" not in html  # zero is not a link
 
 
 def test_commands_quote_branch_names():
-    cfg = RepoConfig("o/r", path=Path("/src/r"), base="main")
     branch = FixBranch(
         "triage/issue-1-;id>pwned",
         1,
@@ -107,9 +109,10 @@ def test_commands_quote_branch_names():
         "",
     )
     issue = Issue(1, "t", "https://github.com/o/r/issues/1", "")
-    html = render_page(
-        RepoReport(cfg, 1, [], [FixEntry(branch, issue)]), generated_at=NOW
+    rep = _report(
+        fixes=[FixEntry(branch, issue)], base="main", test="python -m pytest {files}"
     )
+    html = render_page(rep)
     cmds = html.split("<h3>Commands</h3>")[1].split("</pre>")[0]
     assert "git diff &#x27;main...triage/issue-1-;id&gt;pwned&#x27;" in cmds
     assert "git switch &#x27;triage/issue-1-;id&gt;pwned&#x27; &amp;&amp;" in cmds
@@ -117,7 +120,7 @@ def test_commands_quote_branch_names():
 
 def test_unsafe_urls_are_not_linked():
     issue = Issue(1, "t", "javascript:alert(1)", "", linked_prs=("data:text/html,x",))
-    html = render_page(RepoReport(RepoConfig("o/r"), 1, [issue]), generated_at=NOW)
+    html = render_page(_report(candidates=[Candidate(issue, 0)]))
     assert 'href="javascript:' not in html and 'href="data:' not in html
     assert '<span class="title">#1 t</span>' in html  # shown, but not a link
     assert "default-src 'none'" in html  # CSP blocks scripts in any case
@@ -139,12 +142,6 @@ def test_hide_home(text, expected):
 
 def test_page_never_shows_home_or_clone_path(monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: Path("/home/me"))
-    cfg = RepoConfig(
-        "o/r",
-        path=Path("/home/me/src/r"),
-        base="main",
-        test="/home/me/venv/bin/python -m pytest {files}",
-    )
     branch = FixBranch(
         "triage/issue-1",
         1,
@@ -153,7 +150,19 @@ def test_page_never_shows_home_or_clone_path(monkeypatch):
         "+see /home/me/notes\n",
     )
     issue = Issue(1, "t", "https://github.com/o/r/issues/1", "")
-    rep = RepoReport(cfg, 1, [], [FixEntry(branch, issue)], base=Commit("b", "d", "s"))
-    html = render_page(rep, generated_at=NOW)
+    rep = _report(
+        fixes=[FixEntry(branch, issue)],
+        base="main",
+        base_commit=Commit("b", "d", "s"),
+        test="/home/me/venv/bin/python -m pytest {files}",
+    )
+    html = render_page(rep)
     assert "/home/me" not in html
     assert "~/venv/bin/python -m pytest tests/test_x.py" in html
+
+
+def test_fix_without_test_command_shows_switch_only():
+    branch = FixBranch("triage/issue-1", 1, (Commit("a", "d", "s"),), (), "")
+    rep = _report(fixes=[FixEntry(branch, Issue(1, "t", "u", ""))], base="main")
+    cmds = render_page(rep).split("<h3>Commands</h3>")[1].split("</pre>")[0]
+    assert cmds.rstrip().endswith("git switch triage/issue-1")
