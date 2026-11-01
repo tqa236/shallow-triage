@@ -16,6 +16,9 @@ _BAD_LABELS = {"question", "discussion", "needs-design", "wontfix", "duplicate"}
 # GitHub owner and repo names; also keeps them safe to use as file paths.
 _REPO_RE = re.compile(r"[A-Za-z0-9-]+/(?!\.\.?\Z)[A-Za-z0-9._-]+")
 
+# Bump when _FIELDS changes. Cached issues fetched with another field set are
+# still used (missing fields get defaults) and refreshed a batch per run.
+FIELDS_VERSION = 1
 _FIELDS = """
 fragment IssueFields on Issue {
   number state title url body
@@ -85,15 +88,23 @@ class Issue:
 
     @classmethod
     def from_graphql(cls, node: dict) -> "Issue":
-        prs = node["closedByPullRequestsReferences"]["nodes"]
+        """Build from a GraphQL node; fields it doesn't have get defaults, so
+        nodes cached with an older field set still work."""
+
+        def nested(key: str, inner: str, default: object) -> object:
+            return (node.get(key) or {}).get(inner, default)
+
+        prs = nested("closedByPullRequestsReferences", "nodes", [])
         return cls(
             number=node["number"],
-            title=node["title"],
+            title=node.get("title") or "",
             url=node["url"],
             body=node.get("body") or "",
-            labels=frozenset(lbl["name"].lower() for lbl in node["labels"]["nodes"]),
-            comments=node["comments"]["totalCount"],
-            assigned=node["assignees"]["totalCount"] > 0,
+            labels=frozenset(
+                lbl["name"].lower() for lbl in nested("labels", "nodes", [])
+            ),
+            comments=nested("comments", "totalCount", 0),
+            assigned=nested("assignees", "totalCount", 0) > 0,
             linked_prs=tuple(pr["url"] for pr in prs if pr["state"] == "OPEN"),
             merged_prs=tuple(
                 (pr["url"], pr["mergedAt"][:10])
@@ -160,6 +171,12 @@ def _lookup(owner: str, name: str, numbers: list[int]) -> dict[int, dict | None]
     return found
 
 
+def valid_repo(repo: str) -> bool:
+    """Whether ``repo`` is a GitHub ``owner/name``; such names are also safe
+    to use as relative file paths."""
+    return _REPO_RE.fullmatch(repo) is not None
+
+
 def _open_total(owner: str, name: str) -> int:
     data = gh.graphql_once(_TOTAL_QUERY, owner=owner, name=name)
     return data["repository"]["issues"]["totalCount"]
@@ -177,10 +194,11 @@ def fetch_issues(
 
     Each call fetches the next ``batch`` open issues (all if None), drops or
     refreshes known issues that changed since the previous call, and looks
-    up the issues in ``wanted`` plus up to ``batch`` of ``extra`` whose state
-    isn't known yet. With a ``cache`` the next call continues from here.
+    up the issues in ``wanted`` plus up to ``batch`` more: cached issues
+    fetched with an older field set, then ``extra`` issues whose state isn't
+    known yet. With a ``cache`` the next call continues from here.
     """
-    if not _REPO_RE.fullmatch(repo):
+    if not valid_repo(repo):
         raise ValueError(f"expected owner/name, got {repo!r}")
     owner, name = repo.split("/")
     now = now_utc()
@@ -189,7 +207,7 @@ def fetch_issues(
 
     def add(node: dict) -> None:
         if node["state"] == "OPEN":
-            nodes[node["number"]] = node
+            nodes[node["number"]] = dict(node, _fields=FIELDS_VERSION)
             closed.discard(node["number"])
         else:
             nodes.pop(node["number"], None)
@@ -208,13 +226,14 @@ def fetch_issues(
     def unknown(numbers: tuple[int, ...]) -> list[int]:
         return [n for n in dict.fromkeys(numbers) if n not in nodes and n not in closed]
 
-    extra_unknown = unknown(extra)
-    lookups = unknown(wanted) + (
-        extra_unknown if batch is None else extra_unknown[:batch]
-    )
+    # cached with an older field set: refreshed like the extra lookups
+    stale = [n for n, node in nodes.items() if node.get("_fields") != FIELDS_VERSION]
+    optional = stale + unknown(extra)
+    lookups = unknown(wanted) + (optional if batch is None else optional[:batch])
     for n, node in _lookup(owner, name, lookups).items():
-        if node is None:
-            closed.add(n)  # a pull request or no such issue: never open
+        if node is None:  # a pull request, or no such issue (deleted, moved)
+            nodes.pop(n, None)
+            closed.add(n)
         else:
             add(node)
 

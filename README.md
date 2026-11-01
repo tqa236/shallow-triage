@@ -51,6 +51,19 @@ shallow-triage site owner/a owner/b -o site/
 Then open `site/index.html`. Without local clones, pages show only
 candidates and issues closed by a merged PR.
 
+`site` is two steps you can also run separately:
+
+```sh
+shallow-triage collect owner/a owner/b   # fetch, save reports; no HTML
+shallow-triage render -o site/           # HTML from saved reports; offline
+```
+
+Reports are saved in `~/.local/share/shallow-triage/reports` (change with
+`--data`). `render` needs no network or clones, so pages can be rebuilt or
+restyled from earlier runs. If a repository fails to collect, `site` keeps
+showing its last saved report. See [docs/architecture.md](docs/architecture.md)
+for how input, data and output are separated.
+
 ## Using local clones
 
 To get fix branches and closable issues, describe each repository in a TOML
@@ -112,8 +125,9 @@ picked from those.
 | `--no-cache` | Don't read or write the cache; each run starts from scratch |
 | `--cache-dir DIR` | Keep the cache somewhere else |
 
-No token is stored. For a private repository the cache holds its private
-issue content, so its files are readable by your user only. Repositories in
+No token is stored. For a private repository the cache and the saved
+reports hold its private issue content, so their files are readable by your
+user only. Repositories in
 a site are processed in parallel.
 
 ## Sharing the pages
@@ -136,6 +150,9 @@ hand-off checklist) are in [docs/triage-agent.md](docs/triage-agent.md);
 point the agent to that file.
 
 ## Development
+
+See [docs/architecture.md](docs/architecture.md) before changing a stored
+format: the config, the cache and saved reports must stay readable.
 
 ```sh
 uv sync
