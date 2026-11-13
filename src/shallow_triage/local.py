@@ -96,10 +96,20 @@ def fetch_base(path: Path, base: str) -> None:
         _git(path, "fetch", "--quiet", remote)
 
 
-def changed_files(path: Path, base: str, rev: str) -> tuple[FileChange, ...]:
-    """Files changed on ``rev`` since it left ``base``."""
+def changed_files(
+    path: Path, base: str, rev: str | None = None
+) -> tuple[FileChange, ...]:
+    """Files changed on ``rev`` since it left ``base``.
+
+    Without ``rev``: in the working tree, committed or not, including
+    untracked files that aren't ignored.
+    """
     files = []
-    numstat = _git(path, "diff", *_DIFF_OPTS, "--numstat", "-z", f"{base}...{rev}")
+    if rev is None:
+        fork = _git(path, "merge-base", base, "HEAD").strip()
+        numstat = _git(path, "diff", *_DIFF_OPTS, "--numstat", "-z", fork)
+    else:
+        numstat = _git(path, "diff", *_DIFF_OPTS, "--numstat", "-z", f"{base}...{rev}")
     for record in filter(None, numstat.split("\0")):
         added, deleted, file = record.split("\t", 2)
         files.append(
@@ -109,7 +119,25 @@ def changed_files(path: Path, base: str, rev: str) -> tuple[FileChange, ...]:
                 None if deleted == "-" else int(deleted),
             )
         )
+    if rev is None:
+        untracked = _git(path, "ls-files", "-z", "--others", "--exclude-standard")
+        files += [
+            FileChange(f, None, None) for f in filter(None, untracked.split("\0"))
+        ]
     return tuple(files)
+
+
+def modified_files(path: Path) -> list[str]:
+    """Tracked files with uncommitted changes, staged or not."""
+    out = _git(path, "status", "--porcelain=v1", "-z", "--untracked-files=no")
+    paths, records = [], iter(out.split("\0"))
+    for record in records:
+        if not record:
+            continue
+        paths.append(record[3:])
+        if record[0] in "RC":  # renames and copies: the source path follows
+            next(records, None)
+    return paths
 
 
 def base_commit(path: Path, base: str) -> Commit:

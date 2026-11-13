@@ -114,7 +114,7 @@ def test_start_fix_and_run_tests(history):
     assert history.git("branch", "--show-current").strip() == "triage/issue-42"
     with pytest.raises(ValueError, match="already exists"):
         workflow.start_fix(config, 42)
-    with pytest.raises(ValueError, match="changes nothing"):
+    with pytest.raises(ValueError, match="nothing changed"):
         workflow.run_tests(config)
 
     history.commit("fix", {"tests/test_x.py": "ok\n", "src.py": "x\n"})
@@ -125,6 +125,104 @@ def test_start_fix_and_run_tests(history):
         0,
         "ok\n",
     )
+
+
+def test_run_tests_includes_uncommitted_and_new_files(history):
+    config = RepoConfig("o/r", path=history.path, base="main", test="cat {files}")
+    workflow.start_fix(config, 42)
+    (history.path / "tests").mkdir()
+    (history.path / "tests" / "test_new.py").write_text("new\n")  # untracked
+    (test,) = workflow.run_tests(config)
+    assert (test.command, test.output) == ("cat tests/test_new.py", "new\n")
+
+    (history.path / "tests" / "test_new.py").unlink()
+    (history.path / "n.txt").write_text("edited\n")  # tracked, not committed
+    (test,) = workflow.run_tests(config)
+    assert (test.command, test.output) == ("cat n.txt", "edited\n")
+
+
+def test_keep_local_paths(history, tmp_path_factory):
+    (history.path / "notes.txt").write_text("my settings\n")
+    config = RepoConfig(
+        "o/r",
+        path=history.path,
+        base="main",
+        run="sh {script}",
+        test="cat {files}",
+        keep_local=("notes.txt",),
+    )
+    outside = tmp_path_factory.mktemp("scripts")  # not an untracked file
+    script = _script(outside, "grep -q fixed state.txt\n")
+    assert workflow.bisect(config, script, old="v0", log=print).status == "fixed"
+    assert (history.path / "notes.txt").read_text() == "my settings\n"
+    assert history.git("branch", "--show-current").strip() == "topic"
+
+    workflow.start_fix(config, 42)  # carries the kept change along
+    assert (history.path / "notes.txt").read_text() == "my settings\n"
+    with pytest.raises(ValueError, match="nothing changed"):
+        workflow.run_tests(config)  # the kept change isn't tested
+
+    (history.path / "n.txt").write_text("edited\n")
+    with pytest.raises(ValueError, match=r"uncommitted changes \(n.txt\)"):
+        workflow.start_fix(config, 43)
+
+
+@pytest.mark.parametrize(
+    ("code", "output", "state"),
+    [
+        (0, "", FIXED),
+        (1, "AssertionError", BROKEN),
+        (1, "Traceback\nModuleNotFoundError: No module named 'x'\n", SKIP),
+        (1, "ImportError: cannot import name 'y'", SKIP),
+        (125, "", SKIP),
+        (127, "sh: foo: not found", SKIP),
+        (124, "[timed out]", SKIP),
+    ],
+)
+def test_classify(code, output, state):
+    assert workflow.classify(workflow.Result("x", code, output))[0] == state
+
+
+def test_bisect_skips_import_errors(history, tmp_path):
+    # the old end can't import: that's not the bug, so bisect refuses
+    config = RepoConfig("o/r", path=history.path, base="main", run="sh {script}")
+    script = _script(
+        tmp_path,
+        "grep -q fixed state.txt && exit 0\n"
+        "echo \"ModuleNotFoundError: No module named 'dep'\"; exit 1\n",
+    )
+    with pytest.raises(ValueError, match="couldn't tell at v0"):
+        workflow.bisect(config, script, old="v0", log=print)
+
+
+def test_run_script_at_a_commit(history, tmp_path):
+    config = RepoConfig(
+        "o/r", path=history.path, base="main", run="sh {script}", build="true"
+    )
+    script = _script(tmp_path, "cat n.txt\n")
+    build, ran = workflow.run_script(config, script, at="v0")
+    assert (build.command, ran.output) == ("true", "0\n")
+    assert history.git("branch", "--show-current").strip() == "topic"
+    (ran,) = workflow.run_script(config, script)  # current checkout, no build
+    assert ran.output == "5\n"
+
+
+def test_check_config(history, tmp_path):
+    good = RepoConfig("o/r", path=history.path, base="main", run="sh {script}")
+    assert all(c.ok for c in workflow.check_config(good))
+    bad = RepoConfig(
+        "o/r",
+        path=history.path,
+        base="nope",
+        run="no-such-command {script}",
+        venv=tmp_path / "venv",
+    )
+    failed = {c.name: c.detail for c in workflow.check_config(bad) if not c.ok}
+    assert set(failed) == {"base", "venv", "run"}
+    assert failed["run"].startswith("exit 127")
+    missing = RepoConfig("o/r", path=tmp_path / "missing")
+    assert [c.ok for c in workflow.check_config(missing)] == [False]
+    assert [c.ok for c in workflow.check_config(RepoConfig("o/r"))] == [False]
 
 
 def test_pull_request_of(monkeypatch):

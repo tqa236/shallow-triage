@@ -6,11 +6,15 @@ Input -> data -> output:
   recorded findings and safe marks) and saves one report per repository.
 - ``render`` turns the saved reports into an HTML site; no GitHub, no git.
 - ``site`` does both. ``page`` and ``candidates`` are one-repository
-  shortcuts that also save their report.
+  shortcuts that also save their report (``candidates`` only when unfiltered).
+
+A repository named on the command line uses its config entry, if it has one.
 
 Working on issues, in a repository's workdir with its venv (from the config):
 
+- ``check`` checks that a repository's config works;
 - ``fix`` starts a fix branch, ``test`` runs the tests for it;
+- ``run`` runs a reproduction script, optionally on another commit;
 - ``bisect`` finds the commit that fixed an issue and records it;
 - ``closable`` adds, removes or lists recorded findings by hand;
 - ``safe`` marks issues as reviewed, and ``repro`` takes code from those.
@@ -32,6 +36,7 @@ from shallow_triage.config import (
     default_config_path,
     find_repo,
     load_config,
+    lookup_repo,
 )
 from shallow_triage.findings import (
     FIXED,
@@ -40,7 +45,7 @@ from shallow_triage.findings import (
     Findings,
     default_findings_dir,
 )
-from shallow_triage.issues import fetch_issue, valid_repo
+from shallow_triage.issues import Issue, fetch_issue, valid_repo
 from shallow_triage.jsonout import candidates_json
 from shallow_triage.local import LocalError
 from shallow_triage.marks import SAFE, Marks, code_blocks, default_marks_dir
@@ -53,7 +58,14 @@ from shallow_triage.report import (
 )
 from shallow_triage.site import build_site, collect, render_site
 from shallow_triage.store import default_data_dir
-from shallow_triage.workflow import bisect, run_tests, start_fix
+from shallow_triage.workflow import (
+    bisect,
+    check_config,
+    classify,
+    run_script,
+    run_tests,
+    start_fix,
+)
 
 COMMIT_TEMPLATE = """\
 <area>: <what the fix does, imperative, under 72 characters>
@@ -165,6 +177,7 @@ def _parser() -> argparse.ArgumentParser:
 
     page = sub.add_parser("page", help="one repository's page as HTML")
     _add_repo(page, issue=False)
+    _add_config(page)
     _add_collect(page)
     page.add_argument(
         "-o", "--output", type=Path, help="write to this file instead of stdout"
@@ -172,7 +185,42 @@ def _parser() -> argparse.ArgumentParser:
 
     cand = sub.add_parser("candidates", help="one repository's candidates as JSON")
     _add_repo(cand, issue=False)
+    _add_config(cand)
     _add_collect(cand)
+    filters = cand.add_argument_group(
+        "filters (applied before -n; a filtered list isn't saved)"
+    )
+    filters.add_argument(
+        "--label",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="only issues with this label (repeat: all of them)",
+    )
+    filters.add_argument(
+        "--exclude-label",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="leave out issues with this label (repeatable)",
+    )
+    filters.add_argument(
+        "--max-comments", type=int, metavar="N", help="at most N comments"
+    )
+    filters.add_argument(
+        "--unassigned", action="store_true", help="only issues nobody is assigned to"
+    )
+
+    check = sub.add_parser(
+        "check", help="check that repositories' configs work (clone, base, venv, run)"
+    )
+    _add_repos(check, fetch=False)
+    check.add_argument(
+        "--script",
+        type=Path,
+        help="run this script (e.g. one that imports the project) instead of an"
+        " empty one; it must exit 0",
+    )
 
     fix = sub.add_parser(
         "fix", help="start triage/issue-N from the base in the workdir"
@@ -186,6 +234,33 @@ def _parser() -> argparse.ArgumentParser:
     _add_repo(test, issue=False)
     _add_config(test)
     test.add_argument("--no-build", action="store_true", help="skip the build step")
+
+    run = sub.add_parser(
+        "run", help="run a reproduction script in the workdir with the venv"
+    )
+    _add_repo(run, issue=False)
+    _add_config(run)
+    run.add_argument("script", type=Path, help="the script, outside the clone")
+    run.add_argument(
+        "--at",
+        metavar="REV",
+        help="on this commit (e.g. the base), then back to the current branch",
+    )
+    build = run.add_mutually_exclusive_group()
+    build.add_argument(
+        "--build",
+        action="store_true",
+        default=None,
+        help="build first (the default with --at)",
+    )
+    build.add_argument(
+        "--no-build",
+        dest="build",
+        action="store_false",
+        default=None,
+        help="don't build first",
+    )
+    run.add_argument("--timeout", type=float, help="seconds per command")
 
     bis = sub.add_parser(
         "bisect", help="find the commit that fixed an issue, and record it"
@@ -274,6 +349,26 @@ def _collect_options(args: argparse.Namespace) -> dict:
     }
 
 
+def _issue_filter(args: argparse.Namespace):
+    """The candidates filter from the options, or None if there is none."""
+    wanted = {name.lower() for name in getattr(args, "label", [])}
+    unwanted = {name.lower() for name in getattr(args, "exclude_label", [])}
+    max_comments = getattr(args, "max_comments", None)
+    unassigned = getattr(args, "unassigned", False)
+    if not (wanted or unwanted or max_comments is not None or unassigned):
+        return None
+
+    def keep(issue: Issue) -> bool:
+        return (
+            wanted <= issue.labels
+            and not unwanted & issue.labels
+            and (max_comments is None or issue.comments <= max_comments)
+            and not (unassigned and issue.assigned)
+        )
+
+    return keep
+
+
 def _configured(args: argparse.Namespace) -> list[RepoConfig]:
     """The repos in ``--config``, or in the default config if it exists."""
     path = args.config
@@ -283,9 +378,12 @@ def _configured(args: argparse.Namespace) -> list[RepoConfig]:
 
 
 def _repos(args: argparse.Namespace, parser: argparse.ArgumentParser) -> list:
-    repos = [RepoConfig(name) for name in args.repos]
+    """The repos named, each with its config entry if it has one; with
+    ``--config`` or no names, also every configured repo."""
+    configured = _configured(args)
+    repos = [lookup_repo(configured, n) or RepoConfig(n) for n in args.repos]
     if args.config or not repos:
-        repos += _configured(args)
+        repos += [c for c in configured if c.name not in args.repos]
     if not repos:
         parser.error(f"{args.command}: give at least one repo or --config")
     return repos
@@ -293,6 +391,18 @@ def _repos(args: argparse.Namespace, parser: argparse.ArgumentParser) -> list:
 
 def _one(args: argparse.Namespace) -> RepoConfig:
     return find_repo(_configured(args), args.repo)
+
+
+def _one_or_bare(args: argparse.Namespace) -> RepoConfig:
+    """The repo's config entry, or just its name if it has none."""
+    name = _checked_repo(args.repo)
+    return lookup_repo(_configured(args), name) or RepoConfig(name)
+
+
+def _print_results(results: list) -> None:
+    for result in results:
+        print(f"$ {result.command}")
+        print(result.output, end="" if result.output.endswith("\n") else "\n")
 
 
 def _checked_repo(name: str) -> str:
@@ -348,15 +458,18 @@ def _render(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
 
 
 def _single(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
-    """page, candidates: one repository from GitHub only."""
-    name = _checked_repo(args.repo)
+    """page, candidates: one repository, with its local clone if configured."""
+    config = _one_or_bare(args)
+    keep = _issue_filter(args)
     report = build_report(
-        RepoConfig(name),
+        config,
         **_collect_options(args),
-        findings=Findings(default_findings_dir(), name),
-        marks=Marks(default_marks_dir(), name),
+        findings=Findings(default_findings_dir(), config.name),
+        marks=Marks(default_marks_dir(), config.name),
+        keep=keep,
     )
-    save_report(args.data, report)
+    if keep is None:
+        save_report(args.data, report)
     if args.command == "page":
         html = render_page(report)
         if args.output:
@@ -380,10 +493,36 @@ def _fix(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
 
 def _test(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     results = run_tests(_one(args), build=not args.no_build)
-    for result in results:
-        print(f"$ {result.command}")
-        print(result.output, end="" if result.output.endswith("\n") else "\n")
+    _print_results(results)
     return results[-1].returncode
+
+
+def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    config = _one(args)
+    results = run_script(
+        config, args.script, at=args.at, build=args.build, timeout=args.timeout
+    )
+    _print_results(results)
+    sys.stdout.flush()  # the verdict on stderr comes after the output
+    last = results[-1]
+    if config.build and last.command == config.build:
+        print("build failed", file=sys.stderr)
+    else:
+        state, why = classify(last)
+        where = args.at or "the current checkout"
+        print(f"{state} at {where} ({why})", file=sys.stderr)
+    return last.returncode
+
+
+def _check(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    failed = False
+    for config in _repos(args, parser):
+        print(config.name)
+        for check in check_config(config, args.script):
+            mark = "ok  " if check.ok else "FAIL"
+            print(f"  {mark} {check.name}: {check.detail}".rstrip(": "))
+            failed |= not check.ok
+    return 1 if failed else 0
 
 
 def _bisect(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
@@ -508,6 +647,8 @@ COMMANDS = {
     "candidates": _single,
     "fix": _fix,
     "test": _test,
+    "run": _run,
+    "check": _check,
     "bisect": _bisect,
     "closable": _closable,
     "safe": _safe,

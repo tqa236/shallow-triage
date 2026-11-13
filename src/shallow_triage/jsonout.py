@@ -15,6 +15,9 @@ def candidates_json(report: RepoReport) -> list[dict]:
             "url": c.issue.url,
             "score": c.score,
             "linked_prs": list(c.issue.linked_prs),
+            "labels": sorted(c.issue.labels),
+            "comments": c.issue.comments,
+            "assigned": c.issue.assigned,
         }
         for c in report.candidates
     ]

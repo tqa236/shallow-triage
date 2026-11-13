@@ -12,6 +12,7 @@ Example::
     test = "python -m pytest {files}"
     run = "python {script}"       # how to run a reproduction script
     since = 2020-01-01            # ignore older commits when looking for closable
+    keep_local = [".vscode/settings.json"]  # local edits the tools leave alone
 
 Only ``name`` is required. The config is trusted: ``build``, ``test`` and
 ``run`` are shell commands run as written.
@@ -30,7 +31,16 @@ DEFAULT_BRANCHES = ("triage/issue-*", "fix-*")
 DEFAULT_TEST = "python -m pytest {files}"
 DEFAULT_RUN = "python {script}"
 _PATH_KEYS = {"path", "workdir", "venv"}
-_KEYS = {"name", "base", "test", "run", "build", "branches", "since"} | _PATH_KEYS
+_KEYS = {
+    "name",
+    "base",
+    "test",
+    "run",
+    "build",
+    "branches",
+    "since",
+    "keep_local",
+} | _PATH_KEYS
 _PLACEHOLDERS = {"test": "{files}", "run": "{script}"}
 
 
@@ -46,6 +56,9 @@ class RepoConfig:
     venv: Path | None = None
     build: str | None = None
     run: str = DEFAULT_RUN  # {script} is replaced by the script's path
+    # paths in the workdir whose uncommitted changes are the user's own: they
+    # don't count as a dirty workdir, aren't tested, and survive checkouts
+    keep_local: tuple[str, ...] = ()
 
     @property
     def work_path(self) -> Path | None:
@@ -72,6 +85,9 @@ def load_config(path: Path) -> list[RepoConfig]:
         for key, placeholder in _PLACEHOLDERS.items():
             if key in raw and placeholder not in raw[key]:
                 raise ValueError(f"{where}: '{key}' needs {placeholder}")
+        keep = raw.get("keep_local", [])
+        if not isinstance(keep, list) or not all(isinstance(k, str) for k in keep):
+            raise ValueError(f"{where}: 'keep_local' must be a list of paths")
         since = raw.get("since")
         paths = {k: Path(raw[k]).expanduser() for k in _PATH_KEYS if k in raw}
         repos.append(
@@ -86,6 +102,7 @@ def load_config(path: Path) -> list[RepoConfig]:
                 venv=paths.get("venv"),
                 build=raw.get("build"),
                 run=raw.get("run", DEFAULT_RUN),
+                keep_local=tuple(raw.get("keep_local", ())),
             )
         )
     return repos
@@ -93,7 +110,11 @@ def load_config(path: Path) -> list[RepoConfig]:
 
 def find_repo(repos: list[RepoConfig], name: str) -> RepoConfig:
     """The config of ``name``; ValueError if it isn't configured."""
-    for repo in repos:
-        if repo.name == name:
-            return repo
-    raise ValueError(f"{name} is not in the config")
+    if (repo := lookup_repo(repos, name)) is None:
+        raise ValueError(f"{name} is not in the config")
+    return repo
+
+
+def lookup_repo(repos: list[RepoConfig], name: str) -> RepoConfig | None:
+    """The config of ``name``, or None if it isn't configured."""
+    return next((repo for repo in repos if repo.name == name), None)

@@ -51,8 +51,62 @@ def test_candidates_json(tmp_path, monkeypatch, capsys):
             "url": "https://github.com/o/r/issues/1",
             "score": 3,
             "linked_prs": [],
+            "labels": [],
+            "comments": 0,
+            "assigned": False,
         }
     ]
+
+
+def test_candidates_filters_and_config(tmp_path, git_repo, monkeypatch, capsys):
+    git_repo.commit("init", {"a.py": ""})
+    git_repo.git("switch", "-q", "-c", "triage/issue-4")
+    git_repo.commit("fix", {"a.py": "x"})
+    git_repo.git("switch", "-q", "main")
+    issues = [
+        Issue(2, "bug", "https://github.com/o/r/issues/2", "", frozenset({"bug"})),
+        Issue(3, "q", "https://github.com/o/r/issues/3", "", comments=30),
+        Issue(4, "fixed", "https://github.com/o/r/issues/4", "", frozenset({"bug"})),
+        Issue(5, "mine", "https://github.com/o/r/issues/5", "", assigned=True),
+    ]
+
+    def fetch(repo, cache=None, **kw):
+        return IssueSet(issues, total_open=4, complete=True)
+
+    monkeypatch.setattr(report, "fetch_issues", fetch)
+    cfg = _write_config(tmp_path, git_repo.path)
+    data = tmp_path / "data"
+
+    def numbers(*options):
+        argv = ["candidates", "o/r", "--data", str(data), "--no-cache", "-c", str(cfg)]
+        assert cli.main([*argv, *options]) == 0
+        return [c["number"] for c in json.loads(capsys.readouterr().out)]
+
+    # #4 has a fix branch in the configured clone, so it isn't a candidate
+    assert sorted(numbers()) == [2, 3, 5]
+    assert (data / "o" / "r.json").exists()
+    (data / "o" / "r.json").unlink()
+    assert numbers("--label", "BUG") == [2]
+    assert sorted(numbers("--max-comments", "5", "--unassigned")) == [2]
+    assert sorted(numbers("--exclude-label", "bug")) == [3, 5]
+    assert not (data / "o" / "r.json").exists()  # filtered lists aren't saved
+
+
+def test_named_repos_use_their_config(tmp_path, git_repo, monkeypatch):
+    git_repo.commit("init", {"a.py": ""})
+    git_repo.git("switch", "-q", "-c", "triage/issue-1")
+    git_repo.commit("fix", {"a.py": "x"})
+    git_repo.git("switch", "-q", "main")
+    monkeypatch.setattr(report, "fetch_issues", _fake_fetch)
+    cfg = _write_config(tmp_path, git_repo.path)
+    data = tmp_path / "data"
+    assert cli.main(["collect", "o/r", "-c", str(cfg), "--data", str(data)]) == 0
+    saved = report.load_report(data / "o" / "r.json")
+    assert [f.branch.name for f in saved.fixes] == ["triage/issue-1"]
+    page = tmp_path / "page.html"
+    argv = ["page", "o/r", "-c", str(cfg), "--data", str(data), "-o", str(page)]
+    assert cli.main([*argv, "--no-cache"]) == 0
+    assert "triage/issue-1" in page.read_text()
 
 
 def test_errors_exit_1(tmp_path, capsys):
@@ -137,6 +191,26 @@ def test_bisect_records_a_finding(tmp_path, git_repo, monkeypatch, capsys):
     assert finding.commit == fixed_by and finding.method.startswith(
         "bisect HEAD~3..main"
     )
+
+
+def test_run_and_check_commands(tmp_path, git_repo, capsys):
+    git_repo.commit("c0", {"n.txt": "0\n"})
+    git_repo.commit("c1", {"n.txt": "1\n"})
+    cfg = _write_config(tmp_path, git_repo.path)
+    scripts = tmp_path.parent / f"{tmp_path.name}-scripts"
+    scripts.mkdir()
+    script = scripts / "repro.sh"
+    script.write_text("grep -q 1 n.txt\n")
+    assert cli.main(["run", "o/r", str(script), "-c", str(cfg)]) == 0
+    assert "fixed at the current checkout" in capsys.readouterr().err
+    assert cli.main(["run", "o/r", str(script), "--at", "HEAD~1", "-c", str(cfg)]) == 1
+    assert "broken at HEAD~1 (exit 1)" in capsys.readouterr().err
+
+    assert cli.main(["check", "-c", str(cfg)]) == 0
+    assert "ok   run: sh {script} exits 0" in capsys.readouterr().out
+    bad = _write_config(tmp_path, git_repo.path, venv=str(tmp_path / "none"))
+    assert cli.main(["check", "-c", str(bad)]) == 1
+    assert "FAIL venv: " in capsys.readouterr().out
 
 
 def test_closable_add_list_remove(capsys):

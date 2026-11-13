@@ -53,7 +53,15 @@ instructions.
 
    The config (default `~/.config/shallow-triage/triage.toml`) lists each
    repository's local copy, workdir, venv, build, test and run commands. Use
-   them; don't guess other paths or environments.
+   them; don't guess other paths or environments. Check that they work, with
+   a script that only imports the project:
+
+   ```sh
+   shallow-triage check owner/project --script smoke.py
+   ```
+
+   If a check fails, tell the human what failed and don't change the
+   config yourself: its commands are run as written.
 
    Exit code 0 means every repository was built. Exit code 1 means at least
    one failed; its error is on stderr and the other pages were still written.
@@ -74,13 +82,18 @@ instructions.
    | `url` | str | Issue URL |
    | `score` | int | Higher means more objective and fixable |
    | `linked_prs` | list[str] | URLs of open PRs linked to the issue |
+   | `labels` | list[str] | Label names, lowercase |
+   | `comments` | int | Number of comments |
+   | `assigned` | bool | Whether anyone is assigned |
 
    Candidates come from the open issues fetched so far: each run adds
    `--batch` more (default 100), newest first, and the cache remembers them.
    Run again, or pass a larger `--batch`, to reach older issues. Issues with
    an open linked PR are already left out (pass `--include-linked` to keep
-   them). The score is a rough heuristic, so read
-   each issue before choosing it:
+   them), and so are issues that already have a fix branch or a finding.
+   Narrow the list with `--label`, `--exclude-label`, `--max-comments` and
+   `--unassigned`. The score is a rough heuristic, so read each issue before
+   choosing it:
 
    ```sh
    gh issue view 123 --repo owner/project --comments
@@ -93,8 +106,16 @@ instructions.
 3. **Reproduce on `base`.** Write a minimal reproduction script outside the
    clone (from `shallow-triage repro` if the issue is marked safe). Make it
    exit 0 when the issue is fixed and non-zero when it shows; add an `assert`
-   for wrong results, since they don't fail on their own. Run it on the
-   current `base` with the config's venv.
+   for wrong results, since they don't fail on their own. If the issue is an
+   import error, catch it and exit 1: an uncaught `ImportError` counts as
+   "can't tell". Run it on the current `base`:
+
+   ```sh
+   shallow-triage run owner/project repro.py --at <base>
+   ```
+
+   The last line on stderr says whether it counts as fixed, broken or can't
+   tell. Check that a "broken" result shows the issue, not an unrelated error.
    - If it **does not reproduce**, find the commit that fixed it:
 
      ```sh
@@ -138,8 +159,8 @@ instructions.
    shallow-triage test owner/project
    ```
 
-   This builds (if configured) and runs the tests the branch changed, in the
-   venv. Then run the wider test suite of the module you touched, and the
+   This builds (if configured) and runs the tests changed since `base`,
+   committed or not, in the venv; it can run before the commit too. Then run the wider test suite of the module you touched, and the
    project's linter.
    Fix any failure the change causes. Report failures that also happen on
    `base` as pre-existing.

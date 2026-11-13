@@ -42,6 +42,10 @@ shallow-triage candidates owner/project -n 10       # JSON on stdout
 shallow-triage page owner/project -o project.html   # one HTML page
 ```
 
+`candidates` can be narrowed before `-n` is applied, with `--label NAME`
+(repeat to require several), `--exclude-label NAME`, `--max-comments N` and
+`--unassigned`. A filtered list isn't saved as the repository's report.
+
 Build a site for several repositories:
 
 ```sh
@@ -83,14 +87,30 @@ test = "python -m pytest {files}"    # the default
 run = "python {script}"              # how to run a reproduction script (the default)
 branches = ["triage/issue-*"]        # default: ["triage/issue-*", "fix-*"]
 since = 2024-01-01                   # ignore older evidence for "closable"
+keep_local = [".vscode/"]            # your own uncommitted edits (see below)
 ```
 
 The config is trusted: `build`, `test` and `run` are shell commands run as
 written. Keep it private: it names your local folders.
 
+Check that each entry works before relying on it:
+
+```sh
+shallow-triage check                          # every configured repository
+shallow-triage check owner/project --script smoke.py
+```
+
+`check` reports whether the clone, workdir, `base` and venv exist, and runs
+an empty script with `run` in the current checkout. With `--script`, it runs
+that one instead, for example one that only imports the project, which
+catches a venv missing dependencies. It exits 1 if anything failed.
+
 ```sh
 shallow-triage site --fetch -o site/
 ```
+
+A repository named on the command line (`site owner/project`, `page`,
+`candidates`, ...) uses its config entry when it has one.
 
 - **Fix branches** are local branches matching `branches` that are not merged
   into `base`. The issue number comes from the branch name
@@ -109,20 +129,41 @@ shallow-triage site --fetch -o site/
 
 These commands run in a repository's `workdir` with its `venv` active and
 with credentials (`*_TOKEN`, `*_SECRET`, `*_API_KEY`, ...) removed from the
-environment. They refuse to start if the workdir has uncommitted changes.
+environment.
 
 ```sh
 shallow-triage fix owner/project 123        # create triage/issue-123 from base
-shallow-triage test owner/project           # build, then test what the branch changed
+shallow-triage test owner/project           # build, then test what changed since base
+shallow-triage run owner/project repro.py --at upstream/main   # run a script
 shallow-triage bisect owner/project 123 --old v1.2.0 --script repro.py
 ```
 
-`bisect` checks that the issue shows at `--old` and is fixed on `base`, then
-binary-searches the base's main line for the commit that fixed it, running
-`build` and `run` at each step. The script exits 0 when the issue is fixed,
-125 when it can't tell (the commit is skipped), and anything else when the
-issue shows. The workdir is put back on its branch afterwards. The result,
-with the PR the commit came from, is recorded as a verified finding.
+- **`test`** tests what changed since `base`: the branch's commits plus
+  uncommitted changes and new files that git doesn't ignore, so it can run
+  before the commit. Keep reproduction scripts outside the clone.
+- **`run`** runs a script with the `run` command. By default it runs in the
+  current checkout without building. With `--at REV` it switches to that
+  commit, builds (unless `--no-build`), runs, and switches back. It exits with
+  the script's status and says on stderr whether that counts as fixed,
+  broken or can't tell, as `bisect` would see it.
+- **`bisect`** checks that the issue shows at `--old` and is fixed on
+  `base`, then binary-searches the base's main line for the commit that fixed
+  it, running `build` and `run` at each step. The result, with the PR the
+  commit came from, is recorded as a verified finding.
+
+A reproduction script exits 0 when the issue is fixed, 125 when it can't
+tell, and anything else when the issue shows. A commit also counts as
+"can't tell" when the build fails, the command times out or isn't found, or
+the script stops with an uncaught `ImportError` or `ModuleNotFoundError`:
+those are about the environment, not the issue. If the issue *is* an import
+error, catch it in the script and exit 1.
+
+`fix`, `bisect` and `run --at` switch commits, so they refuse to start if
+the workdir has uncommitted changes to tracked files, and they put the
+workdir back on its branch afterwards. Paths in `keep_local` (files,
+directories or globs) don't count: use it for your own local edits, such as
+editor settings. They are carried across switches, put back as they were
+afterwards, and never tested.
 
 Findings can also be recorded by hand:
 

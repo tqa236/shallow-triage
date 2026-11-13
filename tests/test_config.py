@@ -37,6 +37,7 @@ since = 2023-02-01
     [
         ('[[repo]]\nname = "o/a"\ntypo = 1', "unknown keys"),
         ('[[repo]]\npath = "x"', "missing"),
+        ('[[repo]]\nname = "o/a"\nkeep_local = "x"', "list of paths"),
     ],
 )
 def test_load_config_errors(tmp_path, text, match):
@@ -57,12 +58,14 @@ workdir = "~/src/a-wt"
 venv = "~/venv/a"
 build = "pip install -e ."
 run = "python -X dev {script}"
+keep_local = [".vscode/settings.json"]
 """
     )
     (a,) = load_config(cfg)
     assert a.work_path == Path("~/src/a-wt").expanduser()
     assert a.venv == Path("~/venv/a").expanduser()
     assert (a.build, a.run) == ("pip install -e .", "python -X dev {script}")
+    assert a.keep_local == (".vscode/settings.json",)
     assert RepoConfig("o/b", path=Path("/x")).work_path == Path("/x")
 
 

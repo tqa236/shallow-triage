@@ -11,6 +11,7 @@ default and don't rename or retype existing ones; see
 :mod:`shallow_triage.serialize`.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -94,12 +95,14 @@ def build_report(
     batch: int | None = 100,
     findings: Findings | None = None,
     marks: Marks | None = None,
+    keep: Callable[[Issue], bool] | None = None,
 ) -> RepoReport:
     """Read the local clone, if configured, then bring the issues up to date.
 
     With ``fetch``, the clone's base remote is fetched first. ``batch`` is how
     many more open issues (and issues cited by fixing commits) to fetch.
     ``findings`` and ``marks`` are the user's recorded findings and safe marks.
+    ``keep``, if given, decides which issues can be candidates.
     """
     verified = findings.items if findings else {}
     branches: list[FixBranch] = []
@@ -142,7 +145,7 @@ def build_report(
     closable.sort(key=lambda c: (bool(c.findings), c.latest), reverse=True)
     skip = {f.issue.number for f in fixes} | {c.issue.number for c in closable}
     ranked = rank(
-        [i for i in found.issues if i.number not in skip],
+        [i for i in found.issues if i.number not in skip and (keep is None or keep(i))],
         limit,
         include_linked=include_linked,
     )
